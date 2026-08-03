@@ -1,0 +1,21 @@
+# Python virtualenv
+.venv/
+
+# Captured sensor data. These are run artifacts, not source -- a few minutes of
+# 50 Hz streaming is megabytes of CSV that nobody needs in history.
+logs/
+runs/
+*.csv
+
+# Arduino build output
+nicla_stream/build/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Machine-local Claude Code settings (permissions etc.)
+.claude/settings.local.json
+
+# macOS
+.DS_Store
