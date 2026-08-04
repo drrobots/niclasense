@@ -159,7 +159,9 @@ def main(argv=None):
             print("dropped %d samples (consumer fell behind)" % source.dropped)
         if source.error is not None:
             print("source error: %s" % source.error, file=sys.stderr)
-            return 1
+    # Outside the finally: a return there would swallow an in-flight exception.
+    if source.error is not None:
+        return 1
     return 0
 
 
