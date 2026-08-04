@@ -16,8 +16,13 @@
  * Lines beginning with '#' are metadata (banner + column names), everything else is data.
  *
  * Serial commands:
- *   h  reprint the header block
- *   r  reset the sequence counter and time origin
+ *   h        reprint the header block
+ *   r        reset the sequence counter and time origin
+ *   s<N>     set the streaming rate to N Hz (e.g. "s100"), clamped to
+ *            [1, MOTION_RATE_HZ]; digits accumulate until a non-digit arrives
+ *   b<N>     set the serial baud to N (e.g. "b115200"), clamped to
+ *            [9600, 1000000]; reopens the port, so the host must reconnect
+ *            at the new rate afterwards
  *
  * Set STREAM_BLE to 1 to additionally advertise the same sample as a packed binary
  * notification over BLE. See README.md.
@@ -35,10 +40,18 @@
 // Configuration
 // ---------------------------------------------------------------------------
 
-static const char     FIRMWARE_VERSION[] = "nicla-stream v2";
-static const uint32_t SERIAL_BAUD        = 1000000;
-static const uint32_t STREAM_HZ          = 200;
-static const uint32_t STREAM_PERIOD_MS   = 1000 / STREAM_HZ;
+static const char FIRMWARE_VERSION[] = "nicla-stream v2";
+
+// Serial is native USB-CDC on the nRF52832, not a physical UART, so this value doesn't
+// change the actual link speed -- but it's still runtime-adjustable via the 'b' command
+// (see handleCommands()) since some host CDC-ACM drivers (notably Windows' usbser.sys)
+// are picky about the declared baud and may need a lower one to behave.
+static uint32_t serialBaud = 1000000;
+
+// Streaming rate is runtime-adjustable via the 's' command (see handleCommands()),
+// capped at MOTION_RATE_HZ since the hub never delivers samples faster than that.
+static uint32_t streamHz       = 200;
+static uint32_t streamPeriodMs = 1000 / streamHz;
 
 static const float MOTION_RATE_HZ = 200.0f;  // accel, gyro, mag, quaternion, orientation
 static const float ENV_RATE_HZ    = 1.0f;    // temperature, pressure, humidity, gas, BSEC
@@ -106,9 +119,9 @@ void printHeader() {
   Serial.print("# ");
   Serial.print(FIRMWARE_VERSION);
   Serial.print(" rate_hz=");
-  Serial.print(STREAM_HZ);
+  Serial.print(streamHz);
   Serial.print(" baud=");
-  Serial.print(SERIAL_BAUD);
+  Serial.print(serialBaud);
   Serial.print(" columns=");
   Serial.println(COLUMN_COUNT);
   Serial.println(F("#seq,t_ms,"
@@ -126,7 +139,7 @@ void printHeader() {
 // ---------------------------------------------------------------------------
 
 void setup() {
-  Serial.begin(SERIAL_BAUD);
+  Serial.begin(serialBaud);
 
   // Standalone: no ESLOV and no BHY2 BLE handler, which leaves ArduinoBLE free for the
   // custom service below.
@@ -246,9 +259,51 @@ static void printCsv(uint32_t seq, uint32_t tMs, const float *values) {
   Serial.write(lineBytes, line.len);
 }
 
+// Applies a new streaming rate, clamped to what the hub actually delivers, and
+// realigns the sample grid so the next sample fires immediately rather than
+// waiting out whatever period was already in progress.
+static void setStreamRate(uint32_t hz) {
+  if (hz < 1) hz = 1;
+  if (hz > (uint32_t)MOTION_RATE_HZ) hz = (uint32_t)MOTION_RATE_HZ;
+  streamHz       = hz;
+  streamPeriodMs = 1000 / streamHz;
+  nextSample     = millis();
+}
+
+// Reopens Serial at a new baud. Only meaningful as a value the host's CDC-ACM driver
+// reads back (see the serialBaud comment above) -- the host must reconnect afterwards.
+static void setBaud(uint32_t baud) {
+  if (baud < 9600) baud = 9600;
+  if (baud > 1000000) baud = 1000000;
+  serialBaud = baud;
+  Serial.end();
+  delay(10);
+  Serial.begin(serialBaud);
+}
+
+// '\0' when idle, otherwise the command ('s' or 'b') whose digit argument is
+// currently being accumulated.
+static char     pendingCmd = '\0';
+static uint32_t cmdArg     = 0;
+
 static void handleCommands() {
   while (Serial.available()) {
-    switch (Serial.read()) {
+    char c = Serial.read();
+
+    if (pendingCmd) {
+      if (c >= '0' && c <= '9') {
+        cmdArg = cmdArg * 10 + (c - '0');
+        continue;
+      }
+      if (cmdArg > 0) {
+        if (pendingCmd == 's') setStreamRate(cmdArg);
+        else if (pendingCmd == 'b') setBaud(cmdArg);
+      }
+      pendingCmd = '\0';
+      // fall through so a non-digit terminator can still be acted on below
+    }
+
+    switch (c) {
       case 'h':
         printHeader();
         break;
@@ -256,6 +311,11 @@ static void handleCommands() {
         sequence   = 0;
         timeOrigin = millis();
         nextSample = timeOrigin;
+        break;
+      case 's':
+      case 'b':
+        pendingCmd = c;
+        cmdArg     = 0;
         break;
       default:
         break;
@@ -275,9 +335,9 @@ void loop() {
     sequence++;
 
     // Advance on the fixed grid, resynchronising if we ever fall a full period behind.
-    nextSample += STREAM_PERIOD_MS;
+    nextSample += streamPeriodMs;
     if ((int32_t)(now - nextSample) >= 0) {
-      nextSample = now + STREAM_PERIOD_MS;
+      nextSample = now + streamPeriodMs;
     }
 
 #if STREAM_BLE
