@@ -589,14 +589,11 @@ class BleSource(_ThreadedSource):
 
 
 class SerialControl(object):
-    """What the plot's rate/baud widgets are allowed to do to a SerialSource.
+    """What the plot's target-rate field is allowed to do to a SerialSource.
 
     Keeps the plot free of transport detail: it asks for a rate, gets a status string
     back, and reads the current settings off the properties.
     """
-
-    rates = RATE_CHOICES
-    bauds = BAUD_CHOICES
 
     def __init__(self, source):
         self._source = source

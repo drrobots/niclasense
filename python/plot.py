@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from matplotlib.gridspec import GridSpec
 from matplotlib.ticker import MaxNLocator
-from matplotlib.widgets import Button
+from matplotlib.widgets import TextBox
 
 from columns import COLUMNS
 
@@ -170,16 +170,14 @@ CAPTURE_SLOT = (1, 5, 4)
 # frame time, so traces are strided down to about this many points.
 MAX_POINTS = 900
 
-# Control strip along the bottom, in figure coordinates. Only built when a control object
-# is supplied, so a BLE capture keeps the full-height grid.
-STRIP_Y = 0.016
-STRIP_H = 0.046
-GRID_BOTTOM_WITH_CONTROLS = 0.085
 GRID_BOTTOM_PLAIN = 0.03
+
+# The sketch computes its period as the integer 1000/hz, so anything above this is not a
+# meaningfully different rate and the firmware itself was never asked to go faster.
+MAX_TARGET_HZ = 200
 
 BUTTON_FACE = "#191919"
 BUTTON_HOVER = "#2c2c2c"
-BUTTON_DISABLED_TEXT = "#4a4a4a"
 
 
 class LivePlot(object):
@@ -188,8 +186,9 @@ class LivePlot(object):
     `status` is an optional callable returning a dict of capture facts to show in the
     capture tile and header. Recognised keys: source, csv, rows, dropped, malformed.
 
-    `control` is an optional object exposing rates/bauds/rate/baud/max_rate and
-    set_rate()/set_baud(); supplying one adds the rate and baud strip along the bottom.
+    `control` is an optional object exposing rate/max_rate and set_rate(); supplying one
+    adds an editable target-rate field to the capture tile. Baud switching stays a
+    CLI-only affair (see --baud/--no-autobaud in main.py); the GUI no longer exposes it.
     """
 
     def __init__(self, window=30.0, sample_hz=200.0, fps=20.0, title="", status=None,
@@ -223,16 +222,14 @@ class LivePlot(object):
             figure=self.figure,
             height_ratios=(0.34, 1.0, 1.0, 0.78),
             left=0.035, right=0.988, top=0.965,
-            bottom=GRID_BOTTOM_WITH_CONTROLS if control else GRID_BOTTOM_PLAIN,
+            bottom=GRID_BOTTOM_PLAIN,
             wspace=0.55, hspace=0.42,
         )
 
         self._header = self._make_header(grid)
         self._tiles = [self._make_tile(grid, tile) for tile in TILES]
-        self._capture = self._make_capture(grid)
         # Held on the instance: matplotlib widgets stop responding once garbage collected.
-        self._buttons = {}
-        self._strip = self._make_controls() if control else None
+        self._capture = self._make_capture(grid)
 
         self._t_index = COLUMNS.index("t_ms")
         self._column_index = {c: COLUMNS.index(c) for c in self._series}
@@ -255,18 +252,18 @@ class LivePlot(object):
         axes.text(
             0.008, 0.5, " NICLA SENSE ME ",
             transform=axes.transAxes, va="center", ha="left",
-            fontfamily=FONT, fontsize=12, color="#000000",
+            fontfamily=FONT, fontsize=14, color="#000000",
             bbox=dict(boxstyle="round,pad=0.45", facecolor=ACCENT, edgecolor="none"),
         )
         subtitle = axes.text(
             0.135, 0.5, self.title,
             transform=axes.transAxes, va="center", ha="left",
-            fontfamily=FONT, fontsize=9.5, color=MUTED,
+            fontfamily=FONT, fontsize=11.5, color=MUTED,
         )
         clock = axes.text(
             0.992, 0.5, "",
             transform=axes.transAxes, va="center", ha="right",
-            fontfamily=FONT, fontsize=11, color=TEXT,
+            fontfamily=FONT, fontsize=13, color=TEXT,
         )
         return {"subtitle": subtitle, "clock": clock}
 
@@ -278,7 +275,7 @@ class LivePlot(object):
         axes.set_axisbelow(True)
         for spine in axes.spines.values():
             spine.set_color(TILE_EDGE)
-        axes.tick_params(axis="y", colors=MUTED, labelsize=6.5, length=0, pad=2)
+        axes.tick_params(axis="y", colors=MUTED, labelsize=8.5, length=0, pad=2)
         # The window length is stated once in the header, so per-tile time ticks would
         # only repeat it at six different font sizes.
         axes.set_xticks([])
@@ -289,19 +286,19 @@ class LivePlot(object):
 
         axes.set_title(
             tile["title"], loc="left", pad=6,
-            fontfamily=FONT, fontsize=8, color=TEXT,
+            fontfamily=FONT, fontsize=10, color=TEXT,
         )
         readout = axes.text(
             1.0, 1.015, "",
             transform=axes.transAxes, va="bottom", ha="right",
             fontfamily=FONT, color="#FFFFFF",
             # Three components need room to sit beside the title without colliding.
-            fontsize=10.5 if tile.get("value") else 9.0,
+            fontsize=12.5 if tile.get("value") else 11.0,
         )
         unit = axes.text(
             0.0, -0.02, tile["unit"],
             transform=axes.transAxes, va="top", ha="left",
-            fontfamily=FONT, fontsize=6.5, color=MUTED,
+            fontfamily=FONT, fontsize=8.5, color=MUTED,
         )
 
         for column_name, label, colour in tile["series"]:
@@ -315,7 +312,7 @@ class LivePlot(object):
             quaternion = axes.text(
                 0.12, -0.02, "",
                 transform=axes.transAxes, va="top", ha="left",
-                fontfamily=FONT, fontsize=6.5, color=MUTED,
+                fontfamily=FONT, fontsize=8.5, color=MUTED,
             )
 
         return {"axes": axes, "tile": tile, "readout": readout, "quaternion": quaternion}
@@ -325,116 +322,95 @@ class LivePlot(object):
         axes = self._blank_axes(self.figure.add_subplot(grid[row + 1, column:column + span]))
         axes.set_title(
             "CAPTURE", loc="left", pad=6,
-            fontfamily=FONT, fontsize=8, color=TEXT,
+            fontfamily=FONT, fontsize=10, color=TEXT,
         )
-        rate = axes.text(
-            0.5, 0.72, "-- Hz",
-            transform=axes.transAxes, va="center", ha="center",
-            fontfamily=FONT, fontsize=26, color=ACCENT,
+        axes.text(
+            0.0, 0.86, "target Hz",
+            transform=axes.transAxes, va="center", ha="left",
+            fontfamily=FONT, fontsize=9, color=MUTED,
+        )
+        axes.text(
+            0.62, 0.86, "actual Hz",
+            transform=axes.transAxes, va="center", ha="left",
+            fontfamily=FONT, fontsize=9, color=MUTED,
+        )
+        actual = axes.text(
+            0.62, 0.6, "--",
+            transform=axes.transAxes, va="center", ha="left",
+            fontfamily=FONT, fontsize=24, color=ACCENT,
+        )
+        message = axes.text(
+            0.0, 0.42, "",
+            transform=axes.transAxes, va="center", ha="left",
+            fontfamily=FONT, fontsize=9, color=MUTED,
         )
         detail = axes.text(
-            0.09, 0.3, "",
+            0.09, 0.22, "",
             transform=axes.transAxes, va="center", ha="left",
-            fontfamily=FONT, fontsize=7.5, color=TEXT, linespacing=1.9,
+            fontfamily=FONT, fontsize=9.5, color=TEXT, linespacing=1.7,
         )
-        return {"axes": axes, "rate": rate, "detail": detail}
-
-    def _make_button(self, x, width, label, on_click):
-        axes = self.figure.add_axes((x, STRIP_Y, width, STRIP_H))
-        button = Button(axes, label, color=BUTTON_FACE, hovercolor=BUTTON_HOVER)
-        button.label.set_fontfamily(FONT)
-        button.label.set_fontsize(7.5)
-        button.label.set_color(TEXT)
-        for spine in axes.spines.values():
-            spine.set_color(TILE_EDGE)
-        button.on_clicked(on_click)
-        return button
-
-    def _make_controls(self):
-        """Rate and baud buttons, plus the line that reports what a click did."""
-        control = self._control
-
-        def label(x, text):
-            self.figure.text(
-                x, STRIP_Y + STRIP_H / 2.0, text,
-                va="center", ha="left",
-                fontfamily=FONT, fontsize=7.5, color=MUTED,
-            )
-
-        label(0.035, "RATE Hz")
-        x = 0.098
-        for rate in control.rates:
-            self._buttons[("rate", rate)] = self._make_button(
-                x, 0.038, str(rate), self._rate_clicked(rate)
-            )
-            x += 0.044
-
-        label(x + 0.012, "BAUD")
-        x += 0.055
-        for baud in control.bauds:
-            # 1000000 spelled out is wider than the button; the short form is unambiguous.
-            text = "1M" if baud == 1000000 else str(baud)
-            self._buttons[("baud", baud)] = self._make_button(
-                x, 0.058, text, self._baud_clicked(baud)
-            )
-            x += 0.064
-
-        message = self.figure.text(
-            0.988, STRIP_Y + STRIP_H / 2.0, "",
-            va="center", ha="right",
-            fontfamily=FONT, fontsize=7.5, color=MUTED,
+        capture = {"axes": axes, "actual": actual, "message": message, "detail": detail}
+        capture["target_box"] = (
+            self._make_target_box(axes) if self._control is not None else None
         )
-        # Forces the first _sync_controls() to paint the highlights.
-        return {"message": message, "state": None}
+        return capture
 
-    def _rate_clicked(self, rate):
-        def handler(_event):
-            self._announce(self._control.set_rate(rate))
-        return handler
+    def _make_target_box(self, capture_axes):
+        """An editable target-rate field, sized and placed to sit inside the capture tile.
 
-    def _baud_clicked(self, baud):
-        def handler(_event):
-            # The reconnect blocks the GUI for the best part of a second, so say what is
-            # happening before it starts rather than only reporting the outcome.
-            self._announce("switching to %d baud..." % baud, force_draw=True)
-            self._announce(self._control.set_baud(baud))
-        return handler
-
-    def _announce(self, text, force_draw=False):
-        self._strip["message"].set_text(text)
-        # Failures are the thing worth reading twice.
-        self._strip["message"].set_color(
-            "#FF6037" if "failed" in text or "needs" in text else MUTED
-        )
-        if force_draw:
-            self.figure.canvas.draw_idle()
-            self.figure.canvas.flush_events()
-
-    def _sync_controls(self):
-        """Repaint the highlights when the board's reported settings change.
-
-        Driven by what the board says, not by what was clicked, so a rate the sketch
-        clamped -- or one lowered automatically to fit a slower baud -- shows up honestly.
+        A TextBox needs its own axes, which can't nest inside a data axes -- so its
+        rectangle is derived from the capture tile's own figure-fraction position rather
+        than laid out independently.
         """
         control = self._control
-        state = (control.rate, control.baud)
-        if state == self._strip["state"]:
-            return
-        self._strip["state"] = state
-        rate, baud = state
-        limit = control.max_rate
+        pos = capture_axes.get_position()
+        box_axes = self.figure.add_axes((
+            pos.x0 + pos.width * 0.02,
+            pos.y0 + pos.height * 0.56,
+            pos.width * 0.26,
+            pos.height * 0.16,
+        ))
+        for spine in box_axes.spines.values():
+            spine.set_color(TILE_EDGE)
+        initial = str(int(control.rate)) if control.rate else ""
+        # TextBox sets its own axes facecolor from `color` on construction, overriding
+        # anything set beforehand -- so the dark theme has to be passed in, not applied
+        # after the fact the way it works for a plain Axes.
+        box = TextBox(box_axes, "", initial=initial, color=BUTTON_FACE, hovercolor=BUTTON_HOVER)
+        box.text_disp.set_fontfamily(FONT)
+        box.text_disp.set_fontsize(11)
+        box.text_disp.set_color(TEXT)
+        # The cursor is hardcoded black by TextBox, invisible on a dark box.
+        box.cursor.set_color(TEXT)
+        box.on_submit(self._target_submitted)
+        return box
 
-        for (kind, value), button in self._buttons.items():
-            active = value == (rate if kind == "rate" else baud)
-            enabled = kind == "baud" or value <= limit
-            face = ACCENT if active else BUTTON_FACE
-            button.color = face
-            button.hovercolor = face if active or not enabled else BUTTON_HOVER
-            button.ax.set_facecolor(face)
-            if active:
-                button.label.set_color("#000000")
-            else:
-                button.label.set_color(TEXT if enabled else BUTTON_DISABLED_TEXT)
+    def _target_submitted(self, text):
+        control = self._control
+        text = text.strip()
+        if not text:
+            return
+        try:
+            hz = int(float(text))
+        except ValueError:
+            self._announce_capture("enter a number", failed=True)
+            return
+        hz = max(1, min(hz, MAX_TARGET_HZ))
+        self._capture["target_box"].set_val(str(hz))
+        result = control.set_rate(hz)
+        # The actual-Hz readout already shows a successful change; only failures are
+        # worth a message of their own.
+        if "failed" in result or "needs" in result:
+            self._announce_capture(result, failed=True)
+        else:
+            self._announce_capture("")
+
+    def _announce_capture(self, text, failed=False):
+        message = self._capture["message"]
+        message.set_text(text)
+        message.set_color("#FF6037" if failed else MUTED)
+        self.figure.canvas.draw_idle()
+        self.figure.canvas.flush_events()
 
     # -- data ------------------------------------------------------------------
 
@@ -455,7 +431,7 @@ class LivePlot(object):
     def _update_capture(self, times):
         status = self._status() if self._status is not None else {}
         hz = self._measured_hz(times)
-        self._capture["rate"].set_text("%.0f Hz" % hz if hz else "-- Hz")
+        self._capture["actual"].set_text("%.0f" % hz if hz else "--")
 
         # The description carries the board's banner, so it restates rate and baud after
         # every change -- and this is measured independently of the buttons.
@@ -484,8 +460,6 @@ class LivePlot(object):
     def _refresh(self, _frame):
         if self._drain is not None:
             self._drain()
-        if self._strip is not None:
-            self._sync_controls()
         if not self._t:
             return []
 
