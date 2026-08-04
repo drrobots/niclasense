@@ -136,7 +136,21 @@ def main(argv=None):
     if not args.no_plot:
         from plot import LivePlot
 
-        plot = LivePlot(window=args.window, fps=args.fps, title=source.describe())
+        def status():
+            return {
+                "source": source.describe(),
+                "csv": csv_path if log is not None else None,
+                "rows": log.rows_written if log is not None else 0,
+                "dropped": source.dropped,
+                "malformed": getattr(source, "malformed", 0),
+            }
+
+        plot = LivePlot(
+            window=args.window,
+            fps=args.fps,
+            title=source.describe(),
+            status=status,
+        )
 
     drain = make_drain(source, log, plot)
 

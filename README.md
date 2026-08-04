@@ -9,7 +9,7 @@ Verified working end to end on this machine: exactly 200.000 Hz, zero dropped sa
 ```
 nicla_stream/nicla_stream.ino   firmware
 nicla_bench/nicla_bench.ino     throughput benchmark firmware
-python/                         logger + live plot
+python/                         logger + live dashboard
 python/bench/                   benchmark harness
 .venv/                          project virtualenv
 ```
@@ -22,7 +22,7 @@ Flash the board:
 arduino-cli compile --fqbn arduino:mbed_nicla:nicla_sense nicla_stream && arduino-cli upload -p /dev/cu.usbmodemEE7B25F12 --fqbn arduino:mbed_nicla:nicla_sense nicla_stream
 ```
 
-Run the logger and live plot:
+Run the logger and live dashboard:
 
 ```bash
 cd python && ../.venv/bin/python main.py
@@ -95,24 +95,36 @@ recent value between updates** — they are held, not resampled. Rows are ~165 b
   and self-heats. If you need ambient air temperature, calibrate the offset, or use BSEC's
   internally compensated value.
 
-## Live plot
+## Live dashboard
 
-Four stacked panels sharing a time axis, each with a secondary axis so quantities of very
-different magnitude stay readable together:
+A dark tile grid modelled on Arduino's own [NiclaSenseME web dashboard][dash]: one widget
+per sensor, current value beside the title, scrolling trace underneath. All tiles share the
+same time window, so a bump shows up in the same horizontal place everywhere.
 
-1. **Motion** — accelerometer (g, left) and gyroscope (deg/s, right)
-2. **Magnetometer & orientation** — µT (left) and heading/pitch/roll (right)
-3. **Environment** — temperature and humidity (left), pressure (right)
-4. **Air quality** — IAQ, CO₂-eq, bVOC-eq (left), gas resistance (right)
+- **Row 1** — orientation (heading/pitch/roll, with the raw quaternion under the tile),
+  accelerometer, gyroscope
+- **Row 2** — magnetometer, **capture**, gas resistance
+- **Row 3** — temperature, humidity, pressure, IAQ, CO₂-eq, bVOC-eq
 
-Each axis has a minimum y-span (`*_min_span` in `plot.py`). This matters: without it,
-matplotlib autoscales a motionless board down to its own quantization steps, and sensor
-noise renders as dramatic staircases that read as real signal. The floors are set near each
-sensor's noise level, so a resting board looks flat while real motion still fills the panel.
+The capture tile occupies the slot the web dashboard gives its RGB LED picker. Since this
+tool's job is logging rather than driving the board, it reports the measured sample rate,
+the CSV being written, rows on disk, buffered samples, and any dropped or malformed
+samples — that last line turns orange when either is non-zero.
+
+Tiles are declared in `TILES` in `plot.py` and positioned by `PLACEMENT`, a 12-column grid;
+moving a widget is a one-line change.
+
+Each tile has a minimum y-span (`min_span`). This matters: without it, matplotlib autoscales
+a motionless board down to its own quantization steps, and sensor noise renders as dramatic
+staircases that read as real signal. The floors are set near each sensor's noise level, so a
+resting board looks flat while real motion still fills the tile. Traces are strided down to
+~900 points per tile, which is more resolution than a tile can show and keeps redraws cheap.
 
 Ingest runs at the full 200 Hz regardless of the redraw rate, so plotting never throttles
 logging — the reader thread fills a queue that the animation callback drains on the main
 thread (macOS requires matplotlib to own the main thread).
+
+[dash]: https://github.com/arduino/ArduinoAI/tree/main/NiclaSenseME-dashboard
 
 ## BLE mode
 
@@ -212,7 +224,7 @@ firmware and the Python schema have drifted apart.
 | `python/columns.py` | Single source of truth for the schema, shared by both transports |
 | `python/sources.py` | `SerialSource` and `BleSource`, both threaded into a queue |
 | `python/logger.py` | CSV appender, header written only for new files |
-| `python/plot.py` | Live scrolling matplotlib figure |
+| `python/plot.py` | Live tiled dashboard |
 | `python/main.py` | CLI entry point |
 
 ## Environment
