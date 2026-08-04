@@ -75,7 +75,7 @@ PANELS = (
 class LivePlot(object):
     """Scrolling matplotlib view over the most recent `window` seconds."""
 
-    def __init__(self, window=30.0, sample_hz=50.0, fps=20.0, title=""):
+    def __init__(self, window=30.0, sample_hz=200.0, fps=20.0, title=""):
         self.window = float(window)
         self.fps = fps
         # Headroom of 2x so a faster-than-nominal stream still fills the window.

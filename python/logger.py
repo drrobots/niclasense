@@ -13,7 +13,7 @@ class CsvLogger(object):
     Re-running against an existing log genuinely appends: no duplicate header row.
     """
 
-    def __init__(self, path, flush_every=50):
+    def __init__(self, path, flush_every=200):
         self.path = path
         self.flush_every = flush_every
         self.rows_written = 0

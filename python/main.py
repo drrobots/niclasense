@@ -30,7 +30,7 @@ def parse_args(argv=None):
         help="Transport to read from.",
     )
     parser.add_argument("--port", default=None, help="Serial port (default: auto-detect).")
-    parser.add_argument("--baud", type=int, default=115200, help="Serial baud rate.")
+    parser.add_argument("--baud", type=int, default=1000000, help="Serial baud rate.")
     parser.add_argument("--ble-name", default="NiclaStream", help="BLE local name to scan for.")
     parser.add_argument("--ble-address", default=None, help="BLE address, skips scanning.")
     parser.add_argument(

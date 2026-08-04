@@ -110,7 +110,7 @@ def find_nicla_port():
 class SerialSource(_ThreadedSource):
     """Reads CSV lines over USB serial."""
 
-    def __init__(self, port=None, baud=115200, max_queue=20000):
+    def __init__(self, port=None, baud=1000000, max_queue=20000):
         _ThreadedSource.__init__(self, max_queue=max_queue)
         self.port = port
         self.baud = baud

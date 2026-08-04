@@ -4,9 +4,14 @@
  * Board: Arduino Nicla Sense ME (BHI260AP sensor hub + BME688 gas sensor)
  * FQBN:  arduino:mbed_nicla:nicla_sense
  *
- * One CSV line per sample at STREAM_HZ. Fast sensors (accel/gyro/mag/orientation) run at
- * 100 Hz on the hub; the BME688 and the BSEC air-quality fusion only produce ~1 Hz, so
- * those columns simply repeat their most recent value between updates.
+ * One CSV line per sample at STREAM_HZ. Accel, gyro, quaternion and orientation run at
+ * 200 Hz on the hub -- its measured ceiling, since requesting 400 Hz or more still yields
+ * ~197 Hz. The magnetometer tops out at 50 Hz (BMM150) and the BME688 / BSEC air-quality
+ * fusion at ~1 Hz, so those columns repeat their most recent value between updates.
+ *
+ * At 200 Hz a 162-byte line needs 32 kB/s, so the link runs at 1 Mbaud -- the nRF52832
+ * UARTE maximum, and about 9x what 115200 could carry. See nicla_bench/ for the
+ * measurements behind both numbers.
  *
  * Lines beginning with '#' are metadata (banner + column names), everything else is data.
  *
@@ -30,11 +35,12 @@
 // Configuration
 // ---------------------------------------------------------------------------
 
-static const char     FIRMWARE_VERSION[] = "nicla-stream v1";
-static const uint32_t STREAM_HZ          = 50;
+static const char     FIRMWARE_VERSION[] = "nicla-stream v2";
+static const uint32_t SERIAL_BAUD        = 1000000;
+static const uint32_t STREAM_HZ          = 200;
 static const uint32_t STREAM_PERIOD_MS   = 1000 / STREAM_HZ;
 
-static const float MOTION_RATE_HZ = 100.0f;  // accel, gyro, mag, quaternion, orientation
+static const float MOTION_RATE_HZ = 200.0f;  // accel, gyro, mag, quaternion, orientation
 static const float ENV_RATE_HZ    = 1.0f;    // temperature, pressure, humidity, gas, BSEC
 
 // Dynamic ranges requested in setup(). The BHI260 reports XYZ virtual sensors as raw
@@ -101,6 +107,8 @@ void printHeader() {
   Serial.print(FIRMWARE_VERSION);
   Serial.print(" rate_hz=");
   Serial.print(STREAM_HZ);
+  Serial.print(" baud=");
+  Serial.print(SERIAL_BAUD);
   Serial.print(" columns=");
   Serial.println(COLUMN_COUNT);
   Serial.println(F("#seq,t_ms,"
@@ -118,7 +126,7 @@ void printHeader() {
 // ---------------------------------------------------------------------------
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(SERIAL_BAUD);
 
   // Standalone: no ESLOV and no BHY2 BLE handler, which leaves ArduinoBLE free for the
   // custom service below.
@@ -206,16 +214,36 @@ static const uint8_t DECIMALS[24] = {
   0, 0, 0, 2      // iaq, iaq_s, co2_eq, bvoc_eq
 };
 
+// Formats into RAM so the finished line leaves in one write(). The core's Serial is an
+// mbed UnbufferedSerial: every write() call busy-waits on the UART, so printing field by
+// field spends ~16 us per byte spinning instead of ~10. Batching buys back the margin
+// that 200 Hz needs.
+class LineBuffer : public Print {
+public:
+  LineBuffer(uint8_t *buffer, size_t capacity) : buf(buffer), cap(capacity), len(0) {}
+  void reset() { len = 0; }
+  size_t write(uint8_t c) { if (len < cap) buf[len++] = c; return 1; }
+
+  uint8_t *buf;
+  size_t   cap;
+  size_t   len;
+};
+
+static uint8_t    lineBytes[256];
+static LineBuffer line(lineBytes, sizeof(lineBytes));
+
 static void printCsv(uint32_t seq, uint32_t tMs, const float *values) {
-  Serial.print(seq);
-  Serial.print(',');
-  Serial.print(tMs);
+  line.reset();
+  line.print(seq);
+  line.print(',');
+  line.print(tMs);
   for (uint8_t i = 0; i < 24; i++) {
-    Serial.print(',');
-    Serial.print(values[i], DECIMALS[i]);
+    line.print(',');
+    line.print(values[i], DECIMALS[i]);
   }
-  Serial.print(',');
-  Serial.println(bsec.accuracy());
+  line.print(',');
+  line.println(bsec.accuracy());
+  Serial.write(lineBytes, line.len);
 }
 
 static void handleCommands() {
