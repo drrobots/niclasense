@@ -176,6 +176,11 @@ GRID_BOTTOM_PLAIN = 0.03
 # meaningfully different rate and the firmware itself was never asked to go faster.
 MAX_TARGET_HZ = 200
 
+# Below this the trace has too few points to read; above it the ring buffer needed to
+# back it (see _resize_capacity) starts costing real memory for little benefit.
+MIN_WINDOW_S = 2.0
+MAX_WINDOW_S = 600.0
+
 BUTTON_FACE = "#191919"
 BUTTON_HOVER = "#2c2c2c"
 
@@ -198,6 +203,7 @@ class LivePlot(object):
         self.title = title
         self._status = status
         self._control = control
+        self._sample_hz = sample_hz
         # Headroom of 2x so a faster-than-nominal stream still fills the window.
         capacity = max(100, int(self.window * sample_hz * 2))
         self._t = deque(maxlen=capacity)
@@ -249,14 +255,8 @@ class LivePlot(object):
         axes = self._blank_axes(self.figure.add_subplot(grid[0, :]))
         axes.set_xlim(0, 1)
         axes.set_ylim(0, 1)
-        axes.text(
-            0.008, 0.5, " NICLA SENSE ME ",
-            transform=axes.transAxes, va="center", ha="left",
-            fontfamily=FONT, fontsize=14, color="#000000",
-            bbox=dict(boxstyle="round,pad=0.45", facecolor=ACCENT, edgecolor="none"),
-        )
         subtitle = axes.text(
-            0.135, 0.5, self.title,
+            0.008, 0.5, self.title,
             transform=axes.transAxes, va="center", ha="left",
             fontfamily=FONT, fontsize=11.5, color=MUTED,
         )
@@ -344,45 +344,75 @@ class LivePlot(object):
             transform=axes.transAxes, va="center", ha="left",
             fontfamily=FONT, fontsize=9, color=MUTED,
         )
-        detail = axes.text(
-            0.09, 0.22, "",
+        # file/rows sit as a plain two-line block; the window row below them mixes text
+        # with an inline entry field, so it's built from separate pieces that line up on
+        # the same baseline instead of being part of that block.
+        detail_top = axes.text(
+            0.09, 0.309, "",
             transform=axes.transAxes, va="center", ha="left",
             fontfamily=FONT, fontsize=9.5, color=TEXT, linespacing=1.7,
         )
-        capture = {"axes": axes, "actual": actual, "message": message, "detail": detail}
+        axes.text(
+            0.09, 0.176, "window",
+            transform=axes.transAxes, va="center", ha="left",
+            fontfamily=FONT, fontsize=9.5, color=TEXT,
+        )
+        window_suffix = axes.text(
+            0.37, 0.176, "",
+            transform=axes.transAxes, va="center", ha="left",
+            fontfamily=FONT, fontsize=9.5, color=TEXT,
+        )
+        detail_drops = axes.text(
+            0.09, 0.087, "",
+            transform=axes.transAxes, va="center", ha="left",
+            fontfamily=FONT, fontsize=9.5, color=TEXT,
+        )
+        capture = {
+            "axes": axes, "actual": actual, "message": message,
+            "detail_top": detail_top, "window_suffix": window_suffix,
+            "detail_drops": detail_drops,
+        }
         capture["target_box"] = (
-            self._make_target_box(axes) if self._control is not None else None
+            self._make_editable_box(
+                axes, 0.02, 0.64, 0.26, 0.16,
+                str(int(self._control.rate)) if self._control.rate else "",
+                self._target_submitted,
+            )
+            if self._control is not None else None
+        )
+        capture["window_box"] = self._make_editable_box(
+            axes, 0.22, 0.176, 0.13, 0.09, str(int(self.window)), self._window_submitted
         )
         return capture
 
-    def _make_target_box(self, capture_axes):
-        """An editable target-rate field, sized and placed to sit inside the capture tile.
+    def _make_editable_box(self, capture_axes, x_fraction, y_center_fraction,
+                            width_fraction, height_fraction, initial, on_submit):
+        """An editable text field, sized and placed to sit inside the capture tile.
 
         A TextBox needs its own axes, which can't nest inside a data axes -- so its
         rectangle is derived from the capture tile's own figure-fraction position rather
         than laid out independently.
         """
-        control = self._control
         pos = capture_axes.get_position()
         box_axes = self.figure.add_axes((
-            pos.x0 + pos.width * 0.02,
-            pos.y0 + pos.height * 0.56,
-            pos.width * 0.26,
-            pos.height * 0.16,
+            pos.x0 + pos.width * x_fraction,
+            pos.y0 + pos.height * (y_center_fraction - height_fraction / 2),
+            pos.width * width_fraction,
+            pos.height * height_fraction,
         ))
         for spine in box_axes.spines.values():
             spine.set_color(TILE_EDGE)
-        initial = str(int(control.rate)) if control.rate else ""
         # TextBox sets its own axes facecolor from `color` on construction, overriding
         # anything set beforehand -- so the dark theme has to be passed in, not applied
         # after the fact the way it works for a plain Axes.
         box = TextBox(box_axes, "", initial=initial, color=BUTTON_FACE, hovercolor=BUTTON_HOVER)
         box.text_disp.set_fontfamily(FONT)
-        box.text_disp.set_fontsize(11)
+        # Scales with the box so the small inline window field doesn't overflow its tile.
+        box.text_disp.set_fontsize(11 if height_fraction >= 0.16 else 9.5)
         box.text_disp.set_color(TEXT)
         # The cursor is hardcoded black by TextBox, invisible on a dark box.
         box.cursor.set_color(TEXT)
-        box.on_submit(self._target_submitted)
+        box.on_submit(on_submit)
         return box
 
     def _target_submitted(self, text):
@@ -404,6 +434,34 @@ class LivePlot(object):
             self._announce_capture(result, failed=True)
         else:
             self._announce_capture("")
+
+    def _window_submitted(self, text):
+        text = text.strip()
+        if not text:
+            return
+        try:
+            seconds = float(text)
+        except ValueError:
+            self._announce_capture("enter a number", failed=True)
+            return
+        seconds = max(MIN_WINDOW_S, min(seconds, MAX_WINDOW_S))
+        self._capture["window_box"].set_val(str(int(seconds) if seconds == int(seconds) else seconds))
+        self._resize_capacity(seconds)
+        self.window = seconds
+        self._announce_capture("")
+
+    def _resize_capacity(self, new_window):
+        """Grow the ring buffers if the new window needs more history than they hold.
+
+        Shrinking never needs to touch the buffers -- they just end up holding more
+        history than the display window uses, which is harmless.
+        """
+        needed = max(100, int(new_window * self._sample_hz * 2))
+        if needed <= self._t.maxlen:
+            return
+        self._t = deque(self._t, maxlen=needed)
+        for column, buffer in self._series.items():
+            self._series[column] = deque(buffer, maxlen=needed)
 
     def _announce_capture(self, text, failed=False):
         message = self._capture["message"]
@@ -440,19 +498,28 @@ class LivePlot(object):
 
         csv_path = status.get("csv") or "not logging"
         rows = status.get("rows", 0)
-        lines = [
+        top_lines = [
             "file   %s" % _shorten(csv_path, 34),
             "rows   %s" % _thousands(rows),
-            "window %.0f s      buffered %s" % (self.window, _thousands(len(self._t))),
         ]
+        self._capture["detail_top"].set_text("\n".join(top_lines))
+        self._capture["window_suffix"].set_text(
+            "s      buffered %s" % _thousands(len(self._t))
+        )
+
         losses = []
         if status.get("dropped"):
             losses.append("dropped %s" % _thousands(status["dropped"]))
         if status.get("malformed"):
             losses.append("malformed %s" % _thousands(status["malformed"]))
-        lines.append("   ".join(losses) if losses else "no drops")
-        self._capture["detail"].set_text("\n".join(lines))
-        self._capture["detail"].set_color("#FF6037" if losses else TEXT)
+        self._capture["detail_drops"].set_text(
+            "   ".join(losses) if losses else "no drops"
+        )
+
+        colour = "#FF6037" if losses else TEXT
+        self._capture["detail_top"].set_color(colour)
+        self._capture["window_suffix"].set_color(colour)
+        self._capture["detail_drops"].set_color(colour)
 
         if times:
             self._header["clock"].set_text("t + %.1f s" % times[-1])

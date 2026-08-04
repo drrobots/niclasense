@@ -108,12 +108,16 @@ same time window, so a bump shows up in the same horizontal place everywhere.
   accelerometer, gyroscope
 - **Row 2** — magnetometer, **capture**, gas resistance
 - **Row 3** — temperature, humidity, pressure, IAQ, CO₂-eq, bVOC-eq
-- **Bottom strip** — rate and baud controls, serial only ([details](#changing-rate-and-baud-from-the-dashboard))
+- **Capture tile** — target Hz (serial only, [details](#changing-rate-and-baud-from-the-dashboard)) and
+  plot window, both editable text fields
 
 The capture tile occupies the slot the web dashboard gives its RGB LED picker. Since this
 tool's job is logging rather than driving the board, it reports the measured sample rate,
 the CSV being written, rows on disk, buffered samples, and any dropped or malformed
-samples — that last line turns orange when either is non-zero.
+samples — that last line turns orange when either is non-zero. The **window s** field
+changes how many seconds of history every tile scrolls, live — enter a value between
+2 and 600 and hit enter; the ring buffers backing the traces grow to fit if you ask for
+more history than they currently hold.
 
 Tiles are declared in `TILES` in `plot.py` and positioned by `PLACEMENT`, a 12-column grid;
 moving a widget is a one-line change.
