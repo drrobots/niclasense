@@ -17,7 +17,13 @@ import sys
 import time
 
 from logger import CsvLogger
-from sources import SourceError, create_source, list_serial_ports
+from sources import (
+    SerialControl,
+    SerialSource,
+    SourceError,
+    create_source,
+    list_serial_ports,
+)
 
 
 def parse_args(argv=None):
@@ -30,7 +36,18 @@ def parse_args(argv=None):
         help="Transport to read from.",
     )
     parser.add_argument("--port", default=None, help="Serial port (default: auto-detect).")
-    parser.add_argument("--baud", type=int, default=1000000, help="Serial baud rate.")
+    parser.add_argument(
+        "--baud", type=int, default=1000000,
+        help="Serial baud rate to try first (the sketch boots at 1000000).",
+    )
+    parser.add_argument(
+        "--no-autobaud", action="store_true",
+        help="Fail rather than trying other baud rates when --baud yields nothing.",
+    )
+    parser.add_argument(
+        "--rate", type=int, default=0,
+        help="Ask the board to stream at this many Hz on connect (0 = leave it alone).",
+    )
     parser.add_argument("--ble-name", default="NiclaStream", help="BLE local name to scan for.")
     parser.add_argument("--ble-address", default=None, help="BLE address, skips scanning.")
     parser.add_argument(
@@ -132,6 +149,11 @@ def main(argv=None):
 
     source.start()
 
+    # Routed through SerialControl rather than the source so the link-budget clamp that
+    # protects the GUI buttons protects the flag too.
+    if args.rate and isinstance(source, SerialSource):
+        print(SerialControl(source).set_rate(args.rate))
+
     plot = None
     if not args.no_plot:
         from plot import LivePlot
@@ -150,6 +172,8 @@ def main(argv=None):
             fps=args.fps,
             title=source.describe(),
             status=status,
+            # BLE has no command channel, so the strip only appears for serial.
+            control=SerialControl(source) if isinstance(source, SerialSource) else None,
         )
 
     drain = make_drain(source, log, plot)

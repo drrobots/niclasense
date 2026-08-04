@@ -11,6 +11,7 @@ import queue
 import struct
 import sys
 import threading
+import time
 
 from columns import (
     BLE_DEFAULT_NAME,
@@ -24,6 +25,47 @@ from columns import (
 )
 
 BLE_FRAME_SIZE = struct.calcsize(BLE_STRUCT_FORMAT)
+
+# Baud rates offered in the GUI and swept during auto-detection, fastest first. 1 Mbaud is
+# what the sketch boots at and the nRF52832 UARTE's maximum; the rest are the standard
+# divisors a host driver is most likely to accept if 1 Mbaud is refused.
+BAUD_CHOICES = (1000000, 460800, 230400, 115200, 57600, 9600)
+
+# Streaming rates offered in the GUI. All divide 1000 exactly, because the sketch computes
+# its period as the integer 1000/hz -- ask for 150 and you silently get 166.
+RATE_CHOICES = (200, 100, 50, 25, 10, 5, 1)
+
+# One full CSV row is ~162 bytes plus the newline, and 8N1 spends 10 bits per byte.
+LINE_BITS = 163 * 10
+
+# Fraction of the wire a stream is allowed to occupy. The shipped design point (200 Hz at
+# 1 Mbaud) sits at 33%, and staying near it is deliberate: the core's Serial is an
+# UnbufferedSerial that busy-waits per byte, so a link pushed to saturation does not
+# degrade by dropping samples -- it stalls loop(), starves BHY2.update(), and wedges the
+# board until it is reset.
+LINK_BUDGET = 0.6
+
+# Gap between command bytes. The board has no RX buffer beyond the UARTE FIFO, so bursts
+# written while it is busy-waiting in printCsv() are silently truncated -- see
+# SerialSource.send_command(). 2 ms measured clean; 3 ms is margin on a 15 ms command.
+COMMAND_BYTE_GAP = 0.003
+
+# Port read timeout. Kept short because _read_lines() enforces its own deadline; reads are
+# sized from in_waiting, so a busy stream still moves in bulk.
+READ_TIMEOUT = 0.1
+
+# A full CSV row is ~163 bytes. Well past that with no newline in sight means the bytes
+# are not this board's stream, so the partial buffer is dropped rather than grown.
+MAX_LINE_BYTES = 8192
+
+
+def safe_rate_for(baud):
+    """Fastest offered rate whose CSV stream fits comfortably in `baud`."""
+    ceiling = LINK_BUDGET * baud / LINE_BITS
+    for rate in RATE_CHOICES:
+        if rate <= ceiling:
+            return rate
+    return RATE_CHOICES[-1]
 
 
 class SourceError(Exception):
@@ -41,6 +83,9 @@ class _ThreadedSource(object):
         self.dropped = 0
 
     def start(self):
+        # Cleared rather than assumed unset, so a source can be stopped and restarted --
+        # which is exactly what a baud change does.
+        self._stop.clear()
         self._thread = threading.Thread(target=self._run_guarded, daemon=True)
         self._thread.start()
 
@@ -110,17 +155,25 @@ def find_nicla_port():
 class SerialSource(_ThreadedSource):
     """Reads CSV lines over USB serial."""
 
-    def __init__(self, port=None, baud=1000000, max_queue=20000):
+    def __init__(self, port=None, baud=1000000, max_queue=20000, autobaud=True):
         _ThreadedSource.__init__(self, max_queue=max_queue)
         self.port = port
         self.baud = baud
+        self.autobaud = autobaud
         self.banner = None
         self.malformed = 0
+        # Whatever the board last reported in its banner; None until a header arrives.
+        self.stream_hz = None
+        self.reported_baud = None
         self._serial = None
+        # Partial tail left over between reads; see _read_lines().
+        self._rx = b""
+        # Commands are written from the GUI thread while the reader thread is parked in a
+        # read. The two directions are independent, but a lock costs nothing and keeps a
+        # reconnect from closing the port mid-write.
+        self._write_lock = threading.Lock()
 
     def open(self):
-        import serial
-
         if self.port is None:
             self.port = find_nicla_port()
             if self.port is None:
@@ -128,68 +181,319 @@ class SerialSource(_ThreadedSource):
                     "No Nicla serial port found. Plug the board in, or pass --port. "
                     "Run with --list-ports to see what is available."
                 )
-        try:
-            self._serial = serial.Serial(self.port, self.baud, timeout=1.0)
-        except serial.SerialException as exc:
-            raise SourceError("Could not open %s: %s" % (self.port, exc))
 
-        # Ask for the header so we can check the board's schema against ours.
-        try:
-            self._serial.reset_input_buffer()
-            self._serial.write(b"h")
-        except Exception:
-            pass
-        self._read_header()
-        return self
+        order = [self.baud]
+        if self.autobaud:
+            order += [b for b in BAUD_CHOICES if b != self.baud]
 
-    def _read_header(self):
-        """Consume metadata lines until the column list arrives (or we give up)."""
-        import time
-
-        deadline = time.time() + 3.0
-        while time.time() < deadline:
-            raw = self._serial.readline()
-            if not raw:
+        failure = None
+        for baud in order:
+            try:
+                # Only the first choice gets the patient treatment; the rest are probes.
+                self._open_at(baud, probe=baud != order[0])
+            except SourceError as exc:
+                failure = exc
                 continue
-            line = raw.decode("utf-8", "replace").strip()
-            if not line.startswith("#"):
-                continue
-            if line.startswith("# "):
-                self.banner = line[2:]
-                continue
-            board_columns = tuple(line.lstrip("#").split(","))
-            if board_columns != COLUMNS:
-                raise SourceError(
-                    "Board schema does not match columns.py.\n"
-                    "  board:  %s\n  expected: %s\n"
-                    "Reflash nicla_stream.ino, or update COLUMNS to match."
-                    % (",".join(board_columns), ",".join(COLUMNS))
+            if baud != order[0]:
+                sys.stderr.write(
+                    "note: no valid stream at %d baud, connected at %d instead. "
+                    "Reset the board to return it to its boot rate.\n" % (order[0], baud)
                 )
-            return
-        # No header seen. The sketch only prints it at boot or on 'h', so a board that is
-        # already mid-stream is fine -- carry on and let field-count validation catch a
-        # genuine mismatch.
+            return self
+
+        raise failure or SourceError("Could not read a Nicla stream from %s." % self.port)
+
+    def _open_at(self, baud, probe=False):
+        """Open the port at one baud and confirm a real stream is coming out of it."""
+        import serial
+
+        try:
+            # Short timeout so _read_lines() can enforce its own deadline; the reads are
+            # driven by in_waiting, so this costs nothing when the stream is busy.
+            port = serial.Serial(self.port, baud, timeout=READ_TIMEOUT)
+        except serial.SerialException as exc:
+            raise SourceError("Could not open %s at %d baud: %s" % (self.port, baud, exc))
+
+        self._serial = port
+        self.baud = baud
+        self._rx = b""
+
+        # Ask for the header so we can check the board's schema against ours. The request
+        # is a single byte and can still be swallowed by a full RX FIFO, so ask more than
+        # once -- otherwise a stale banner survives a reconnect and the GUI reports the
+        # baud we just left. A probe is only deciding signal from noise, so one ask is
+        # enough and keeps the auto-baud sweep short.
+        outcome = "none"
+        failure = None
+        for _ in range(1 if probe else 3):
+            try:
+                port.reset_input_buffer()
+                port.write(b"h")
+                port.flush()
+                outcome = self._read_header(timeout=1.2 if probe else 1.5)
+            except SourceError:
+                raise
+            except Exception as exc:
+                # A wrong baud can upset the driver itself, and pyserial surfaces that as
+                # SerialException rather than silence. Treat it as this candidate failing,
+                # not as the sweep failing.
+                failure = exc
+                break
+            if outcome == "header":
+                break
+
+        if outcome == "none":
+            try:
+                port.close()
+            except Exception:
+                pass
+            self._serial = None
+            raise SourceError(
+                "Nothing recognisable arrived from %s at %d baud%s."
+                % (self.port, baud, ": %s" % failure if failure else "")
+            )
+
+    def _read_lines(self, timeout):
+        """Complete lines arriving within `timeout` seconds, as decoded strings.
+
+        Deliberately not readline(). pyserial's readline has no wall-clock bound -- its
+        timeout resets on every byte received -- so it only returns when a 0x0A turns up.
+        A baud mismatch streams dense structured garbage that can contain none at all:
+        probing a 115200 stream at 1 Mbaud yields ~12 kB/s of it, and readline() hangs
+        outright rather than timing out. Everything here is bounded by the deadline.
+        """
+        deadline = time.time() + timeout
+        lines = []
+        while time.time() < deadline and not lines:
+            waiting = self._serial.in_waiting
+            chunk = self._serial.read(waiting if waiting else 1)
+            if not chunk:
+                continue
+            self._rx += chunk
+            if b"\n" in self._rx:
+                parts = self._rx.split(b"\n")
+                self._rx = parts.pop()
+                lines.extend(parts)
+            elif len(self._rx) > MAX_LINE_BYTES:
+                # No newline in far more than a line's worth: this is not our stream.
+                self._rx = b""
+        return [line.decode("utf-8", "replace").strip() for line in lines]
+
+    def _parse_banner(self, text):
+        """Record a '# <banner>' line and pull the board's live settings out of it."""
+        self.banner = text
+        for field in text.split():
+            name, _, value = field.partition("=")
+            if not value.isdigit():
+                continue
+            if name == "rate_hz":
+                self.stream_hz = int(value)
+            elif name == "baud":
+                self.reported_baud = int(value)
+
+    def _read_header(self, timeout=3.0):
+        """Consume metadata until the column list arrives (or we give up).
+
+        Returns "header" if the board's schema was seen and matched, "data" if only
+        well-formed sample lines showed up, or "none" if nothing usable did -- which is
+        how open() recognises a wrong baud, since a mismatched UART yields noise that
+        fails both tests.
+        """
+        expected = len(COLUMNS)
+        deadline = time.time() + timeout
+        saw_data = False
+        while time.time() < deadline:
+            remaining = max(0.0, deadline - time.time())
+            for line in self._read_lines(min(0.3, remaining)):
+                if not line:
+                    continue
+                if line.startswith("#"):
+                    if line.startswith("# "):
+                        self._parse_banner(line[2:])
+                        continue
+                    board_columns = tuple(line.lstrip("#").split(","))
+                    if board_columns != COLUMNS:
+                        raise SourceError(
+                            "Board schema does not match columns.py.\n"
+                            "  board:  %s\n  expected: %s\n"
+                            "Reflash nicla_stream.ino, or update COLUMNS to match."
+                            % (",".join(board_columns), ",".join(COLUMNS))
+                        )
+                    return "header"
+                if len(line.split(",")) == expected:
+                    # The sketch only prints its header at boot or on 'h', so a board
+                    # already mid-stream is fine -- the field count is proof enough that
+                    # the baud is right and the schema plausible.
+                    saw_data = True
+        return "data" if saw_data else "none"
+
+    # -- runtime control -------------------------------------------------------
+
+    def send_command(self, text):
+        """Write a sketch command, one byte at a time.
+
+        The pacing is not politeness. The core's Serial is an mbed UnbufferedSerial with
+        no RX ring buffer, so incoming bytes live in the UARTE's few-byte hardware FIFO
+        until loop() reads them -- and loop() spends milliseconds at a time busy-waiting
+        inside printCsv(). A command written as one burst lands mid-line and gets partly
+        eaten, silently: measured 7/12 delivery for "s100h" at 200 Hz, against 12/12 with
+        the gap below.
+        """
+        with self._write_lock:
+            if self._serial is None:
+                raise SourceError("Serial port is not open.")
+            try:
+                for char in text:
+                    self._serial.write(char.encode("ascii"))
+                    self._serial.flush()
+                    time.sleep(COMMAND_BYTE_GAP)
+            except Exception as exc:
+                raise SourceError("Could not write to %s: %s" % (self.port, exc))
+
+    def _refresh_banner(self, attempts=4):
+        """Re-ask for the banner until it describes the baud we are actually on.
+
+        _open_at() asks too, but that request races the reopen and is the one most likely
+        to be dropped. Retrying here -- with the reader thread live, so the parse goes
+        through the same path as every other banner -- keeps the GUI from reporting the
+        baud it just left.
+        """
+        for _ in range(attempts):
+            try:
+                self.send_command("h")
+            except SourceError:
+                return False
+            deadline = time.time() + 0.5
+            while time.time() < deadline:
+                if self.reported_baud == self.baud:
+                    return True
+                time.sleep(0.02)
+        return False
+
+    def set_rate(self, hz, attempts=4):
+        """Ask the board to stream at `hz`, confirming it took. Returns True if it did.
+
+        Terminated with 'h' rather than a newline: the sketch acts on the digits when any
+        non-digit arrives and then falls through to the switch, so 'h' both ends the
+        argument and makes the board reprint its banner. _run() parses that back into
+        stream_hz, giving a free acknowledgement -- which is also what makes the retry
+        possible, since a dropped command is otherwise silent.
+        """
+        hz = int(hz)
+        for _ in range(attempts):
+            self.send_command("s%dh" % hz)
+            if not self.running:
+                # Nobody is parsing banners yet, so there is nothing to confirm against.
+                return False
+            deadline = time.time() + 0.6
+            while time.time() < deadline:
+                if self.stream_hz == hz:
+                    return True
+                time.sleep(0.02)
+        return False
+
+    def set_baud(self, baud, rate=None):
+        """Move both ends of the link to `baud`, returning the rate settled on.
+
+        Serial here is a real UART bridged by the CMSIS-DAP probe, not USB CDC, so baud
+        is the wire speed and both ends must agree. The board switches as soon as it sees
+        the terminator, which means the host has to follow immediately and blind -- there
+        is no acknowledgement possible at the old rate.
+        """
+        baud = int(baud)
+        limit = safe_rate_for(baud)
+        target = limit if rate is None else min(int(rate), limit)
+
+        # Rate first, and only then baud. The reverse order leaves the board briefly
+        # streaming more bytes than the new wire can carry, which stalls it rather than
+        # merely dropping samples (see LINK_BUDGET).
+        if target != self.stream_hz:
+            if not self.set_rate(target):
+                raise SourceError(
+                    "Board did not accept %d Hz, so the baud change was not attempted."
+                    % target
+                )
+            time.sleep(0.2)
+
+        if baud == self.baud:
+            return self.baud, target
+
+        # No verification is possible here: the board switches on the terminator, so its
+        # reply would arrive at a baud we are no longer listening at.
+        self.send_command("b%d\n" % baud)
+        landed = self._reconnect(baud)
+        return landed, self.stream_hz or target
+
+    def _reconnect(self, wanted):
+        """Reopen the port after a baud change, returning the baud actually reached.
+
+        The 'b' command is as droppable as any other (see send_command), and a dropped one
+        leaves the board where it was. So rather than trust the switch, look for the board
+        at the new rate and fall back to sweeping -- which turns the worst case from "reset
+        the board" into "nothing happened".
+        """
+        was_running = self.running
+        if was_running:
+            # Base stop() only joins the reader thread; SerialSource.stop() would also
+            # close the port, which we want to do ourselves under the write lock.
+            _ThreadedSource.stop(self)
+
+        with self._write_lock:
+            if self._serial is not None:
+                try:
+                    self._serial.close()
+                except Exception:
+                    pass
+                self._serial = None
+
+        # The sketch waits 10 ms between Serial.end() and Serial.begin(); leave margin for
+        # the probe to reprogram its side of the bridge too.
+        time.sleep(0.3)
+        previous = self.baud
+
+        order = [wanted, previous] + [b for b in BAUD_CHOICES if b not in (wanted, previous)]
+        for baud in order:
+            try:
+                self._open_at(baud, probe=baud != wanted)
+            except SourceError:
+                continue
+            # A clean switch is not a failure, even if the old reader thread recorded one.
+            self.error = None
+            if was_running:
+                self.start()
+                self._refresh_banner()
+            return baud
+
+        raise SourceError(
+            "Lost the board after switching to %d baud, and could not find it at any "
+            "other rate. Reset it to return to %d." % (wanted, previous)
+        )
 
     def _run(self):
         expected = len(COLUMNS)
         while not self._stop.is_set():
-            raw = self._serial.readline()
-            if not raw:
-                continue
-            line = raw.decode("utf-8", "replace").strip()
-            if not line or line.startswith("#"):
-                continue
-            fields = line.split(",")
-            if len(fields) != expected:
-                # Partial line, typically the first read after a reset.
-                self.malformed += 1
-                continue
-            try:
-                sample = tuple(parse(f) for parse, f in zip(PARSERS, fields))
-            except ValueError:
-                self.malformed += 1
-                continue
-            self._emit(sample)
+            # Bounded, so stopping stays responsive and a baud mismatch cannot wedge the
+            # reader the way readline() would -- see _read_lines().
+            for line in self._read_lines(0.25):
+                if not line:
+                    continue
+                if line.startswith("#"):
+                    # A banner mid-stream means someone sent 'h' -- which set_rate() does
+                    # on every change, so this is where a rate command is acknowledged.
+                    if line.startswith("# "):
+                        self._parse_banner(line[2:])
+                    continue
+                fields = line.split(",")
+                if len(fields) != expected:
+                    # Partial line, typically the first read after a reset.
+                    self.malformed += 1
+                    continue
+                try:
+                    sample = tuple(parse(f) for parse, f in zip(PARSERS, fields))
+                except ValueError:
+                    self.malformed += 1
+                    continue
+                self._emit(sample)
 
     def stop(self):
         _ThreadedSource.stop(self)
@@ -279,8 +583,62 @@ class BleSource(_ThreadedSource):
         return "BLE %s" % (self.address or self.name)
 
 
+# ---------------------------------------------------------------------------
+# Runtime control
+# ---------------------------------------------------------------------------
+
+
+class SerialControl(object):
+    """What the plot's rate/baud widgets are allowed to do to a SerialSource.
+
+    Keeps the plot free of transport detail: it asks for a rate, gets a status string
+    back, and reads the current settings off the properties.
+    """
+
+    rates = RATE_CHOICES
+    bauds = BAUD_CHOICES
+
+    def __init__(self, source):
+        self._source = source
+
+    @property
+    def rate(self):
+        return self._source.stream_hz
+
+    @property
+    def baud(self):
+        return self._source.baud
+
+    @property
+    def max_rate(self):
+        """Fastest rate the current baud can carry; faster buttons are disabled."""
+        return safe_rate_for(self._source.baud)
+
+    def set_rate(self, hz):
+        if hz > self.max_rate:
+            return "%d Hz needs more than %d baud" % (hz, self.baud)
+        try:
+            ok = self._source.set_rate(hz)
+        except SourceError as exc:
+            return "rate failed: %s" % exc
+        return "rate -> %d Hz" % hz if ok else "rate failed: no reply from board"
+
+    def set_baud(self, baud):
+        if baud == self.baud:
+            return "already at %d baud" % baud
+        try:
+            landed, rate = self._source.set_baud(baud)
+        except SourceError as exc:
+            return "baud failed: %s" % exc
+        if landed != baud:
+            return "baud failed: still at %d" % landed
+        return "%d baud, %d Hz" % (landed, rate)
+
+
 def create_source(args):
     """Build the source the CLI asked for."""
     if args.source == "ble":
         return BleSource(name=args.ble_name, address=args.ble_address)
-    return SerialSource(port=args.port, baud=args.baud)
+    return SerialSource(
+        port=args.port, baud=args.baud, autobaud=not args.no_autobaud
+    )

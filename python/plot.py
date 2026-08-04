@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from matplotlib.gridspec import GridSpec
 from matplotlib.ticker import MaxNLocator
+from matplotlib.widgets import Button
 
 from columns import COLUMNS
 
@@ -169,19 +170,35 @@ CAPTURE_SLOT = (1, 5, 4)
 # frame time, so traces are strided down to about this many points.
 MAX_POINTS = 900
 
+# Control strip along the bottom, in figure coordinates. Only built when a control object
+# is supplied, so a BLE capture keeps the full-height grid.
+STRIP_Y = 0.016
+STRIP_H = 0.046
+GRID_BOTTOM_WITH_CONTROLS = 0.085
+GRID_BOTTOM_PLAIN = 0.03
+
+BUTTON_FACE = "#191919"
+BUTTON_HOVER = "#2c2c2c"
+BUTTON_DISABLED_TEXT = "#4a4a4a"
+
 
 class LivePlot(object):
     """Scrolling dashboard over the most recent `window` seconds.
 
     `status` is an optional callable returning a dict of capture facts to show in the
     capture tile and header. Recognised keys: source, csv, rows, dropped, malformed.
+
+    `control` is an optional object exposing rates/bauds/rate/baud/max_rate and
+    set_rate()/set_baud(); supplying one adds the rate and baud strip along the bottom.
     """
 
-    def __init__(self, window=30.0, sample_hz=200.0, fps=20.0, title="", status=None):
+    def __init__(self, window=30.0, sample_hz=200.0, fps=20.0, title="", status=None,
+                 control=None):
         self.window = float(window)
         self.fps = fps
         self.title = title
         self._status = status
+        self._control = control
         # Headroom of 2x so a faster-than-nominal stream still fills the window.
         capacity = max(100, int(self.window * sample_hz * 2))
         self._t = deque(maxlen=capacity)
@@ -205,13 +222,17 @@ class LivePlot(object):
             4, 12,
             figure=self.figure,
             height_ratios=(0.34, 1.0, 1.0, 0.78),
-            left=0.035, right=0.988, top=0.965, bottom=0.03,
+            left=0.035, right=0.988, top=0.965,
+            bottom=GRID_BOTTOM_WITH_CONTROLS if control else GRID_BOTTOM_PLAIN,
             wspace=0.55, hspace=0.42,
         )
 
         self._header = self._make_header(grid)
         self._tiles = [self._make_tile(grid, tile) for tile in TILES]
         self._capture = self._make_capture(grid)
+        # Held on the instance: matplotlib widgets stop responding once garbage collected.
+        self._buttons = {}
+        self._strip = self._make_controls() if control else None
 
         self._t_index = COLUMNS.index("t_ms")
         self._column_index = {c: COLUMNS.index(c) for c in self._series}
@@ -318,6 +339,103 @@ class LivePlot(object):
         )
         return {"axes": axes, "rate": rate, "detail": detail}
 
+    def _make_button(self, x, width, label, on_click):
+        axes = self.figure.add_axes((x, STRIP_Y, width, STRIP_H))
+        button = Button(axes, label, color=BUTTON_FACE, hovercolor=BUTTON_HOVER)
+        button.label.set_fontfamily(FONT)
+        button.label.set_fontsize(7.5)
+        button.label.set_color(TEXT)
+        for spine in axes.spines.values():
+            spine.set_color(TILE_EDGE)
+        button.on_clicked(on_click)
+        return button
+
+    def _make_controls(self):
+        """Rate and baud buttons, plus the line that reports what a click did."""
+        control = self._control
+
+        def label(x, text):
+            self.figure.text(
+                x, STRIP_Y + STRIP_H / 2.0, text,
+                va="center", ha="left",
+                fontfamily=FONT, fontsize=7.5, color=MUTED,
+            )
+
+        label(0.035, "RATE Hz")
+        x = 0.098
+        for rate in control.rates:
+            self._buttons[("rate", rate)] = self._make_button(
+                x, 0.038, str(rate), self._rate_clicked(rate)
+            )
+            x += 0.044
+
+        label(x + 0.012, "BAUD")
+        x += 0.055
+        for baud in control.bauds:
+            # 1000000 spelled out is wider than the button; the short form is unambiguous.
+            text = "1M" if baud == 1000000 else str(baud)
+            self._buttons[("baud", baud)] = self._make_button(
+                x, 0.058, text, self._baud_clicked(baud)
+            )
+            x += 0.064
+
+        message = self.figure.text(
+            0.988, STRIP_Y + STRIP_H / 2.0, "",
+            va="center", ha="right",
+            fontfamily=FONT, fontsize=7.5, color=MUTED,
+        )
+        # Forces the first _sync_controls() to paint the highlights.
+        return {"message": message, "state": None}
+
+    def _rate_clicked(self, rate):
+        def handler(_event):
+            self._announce(self._control.set_rate(rate))
+        return handler
+
+    def _baud_clicked(self, baud):
+        def handler(_event):
+            # The reconnect blocks the GUI for the best part of a second, so say what is
+            # happening before it starts rather than only reporting the outcome.
+            self._announce("switching to %d baud..." % baud, force_draw=True)
+            self._announce(self._control.set_baud(baud))
+        return handler
+
+    def _announce(self, text, force_draw=False):
+        self._strip["message"].set_text(text)
+        # Failures are the thing worth reading twice.
+        self._strip["message"].set_color(
+            "#FF6037" if "failed" in text or "needs" in text else MUTED
+        )
+        if force_draw:
+            self.figure.canvas.draw_idle()
+            self.figure.canvas.flush_events()
+
+    def _sync_controls(self):
+        """Repaint the highlights when the board's reported settings change.
+
+        Driven by what the board says, not by what was clicked, so a rate the sketch
+        clamped -- or one lowered automatically to fit a slower baud -- shows up honestly.
+        """
+        control = self._control
+        state = (control.rate, control.baud)
+        if state == self._strip["state"]:
+            return
+        self._strip["state"] = state
+        rate, baud = state
+        limit = control.max_rate
+
+        for (kind, value), button in self._buttons.items():
+            active = value == (rate if kind == "rate" else baud)
+            enabled = kind == "baud" or value <= limit
+            face = ACCENT if active else BUTTON_FACE
+            button.color = face
+            button.hovercolor = face if active or not enabled else BUTTON_HOVER
+            button.ax.set_facecolor(face)
+            if active:
+                button.label.set_color("#000000")
+            else:
+                button.label.set_color(TEXT if enabled else BUTTON_DISABLED_TEXT)
+
     # -- data ------------------------------------------------------------------
 
     def add(self, sample):
@@ -338,6 +456,11 @@ class LivePlot(object):
         status = self._status() if self._status is not None else {}
         hz = self._measured_hz(times)
         self._capture["rate"].set_text("%.0f Hz" % hz if hz else "-- Hz")
+
+        # The description carries the board's banner, so it restates rate and baud after
+        # every change -- and this is measured independently of the buttons.
+        if status.get("source"):
+            self._header["subtitle"].set_text(status["source"])
 
         csv_path = status.get("csv") or "not logging"
         rows = status.get("rows", 0)
@@ -361,6 +484,8 @@ class LivePlot(object):
     def _refresh(self, _frame):
         if self._drain is not None:
             self._drain()
+        if self._strip is not None:
+            self._sync_controls()
         if not self._t:
             return []
 

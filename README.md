@@ -54,6 +54,9 @@ you get `Resource busy`.
 |---|---|---|
 | `--source` | `serial` | `serial` or `ble` |
 | `--port` | auto | Serial device |
+| `--baud` | `1000000` | Baud to try first; the sketch boots at 1000000 |
+| `--no-autobaud` | off | Fail instead of trying other rates when `--baud` yields nothing |
+| `--rate` | `0` | Ask the board to stream at N Hz on connect (0 = leave it alone) |
 | `--csv` | `logs/nicla_<ts>.csv` | Output file; `none` disables logging |
 | `--window` | `30` | Plot window in seconds |
 | `--fps` | `20` | Plot refresh rate |
@@ -105,6 +108,7 @@ same time window, so a bump shows up in the same horizontal place everywhere.
   accelerometer, gyroscope
 - **Row 2** — magnetometer, **capture**, gas resistance
 - **Row 3** — temperature, humidity, pressure, IAQ, CO₂-eq, bVOC-eq
+- **Bottom strip** — rate and baud controls, serial only ([details](#changing-rate-and-baud-from-the-dashboard))
 
 The capture tile occupies the slot the web dashboard gives its RGB LED picker. Since this
 tool's job is logging rather than driving the board, it reports the measured sample rate,
@@ -204,14 +208,62 @@ cd python && ../.venv/bin/python bench/capture.py
 
 ## Serial commands
 
-Single characters, sent to the board while streaming:
+Sent to the board while streaming:
 
 - `h` — reprint the header block (banner + column names)
 - `r` — reset the sequence counter and time origin
+- `s<N>` — stream at N Hz, clamped to `[1, 200]`
+- `b<N>` — set the UART baud, clamped to `[9600, 1000000]`
 
 Lines starting with `#` are metadata; everything else is data. `SerialSource` validates the
 board's header against `columns.py` at connect time and reports a clear error if the
 firmware and the Python schema have drifted apart.
+
+The digits of `s`/`b` accumulate until a **non-digit terminator** arrives, and the
+terminator is itself acted on — so `s100h` sets the rate *and* makes the board reprint its
+banner. The banner carries `rate_hz=` and `baud=`, which is how the host confirms a command
+landed without needing a dedicated ack.
+
+Three things make this less simple than it looks, all of them handled in `sources.py`:
+
+- **Commands get silently dropped.** The core's `Serial` is an mbed `UnbufferedSerial` with
+  no RX ring buffer, so incoming bytes sit in the UARTE's few-byte FIFO until `loop()`
+  reads them — and `loop()` spends milliseconds at a time busy-waiting inside `printCsv()`.
+  A command written as one burst lands mid-line and is partly eaten: measured **7/12**
+  delivery for `s100h` at 200 Hz, against **12/12** with a 2 ms inter-byte gap. Commands are
+  therefore written one byte at a time, and verified against the banner with retries.
+- **`pyserial.readline()` can hang forever here.** Its timeout resets on every byte
+  received, so it only returns when a `0x0A` turns up. A baud mismatch streams dense
+  *structured* garbage — probing a 115200 stream at 1 Mbaud gives ~12 kB/s at 0% printable —
+  that can contain no newline at all. `_read_lines()` reads by `in_waiting` against a real
+  wall-clock deadline instead.
+- **Lower the rate before lowering the baud.** An oversubscribed link does not drop samples;
+  it stalls `loop()`, starves `BHY2.update()`, and wedges the board.
+
+## Changing rate and baud from the dashboard
+
+The plot has a control strip along the bottom: rate buttons on the left, baud on the right.
+Both act on the live board, and both are confirmed against the banner rather than assumed —
+the greyed-out rates are the ones the current baud cannot carry.
+
+Only rates that divide 1000 exactly are offered, because the sketch computes its period as
+the integer `1000/hz`; ask for 150 and you silently get 166.
+
+Baud is the wire speed — `Serial` is a real UART (see below), not USB CDC — so both ends
+must move together. Picking a baud lowers the stream rate first, sends `b<N>`, then reopens
+the port and re-verifies. Two things keep that from being a trap:
+
+- **Baud is not persisted.** Any board reset returns it to 1 Mbaud.
+- **Auto-baud on connect.** If `--baud` yields nothing recognisable the host sweeps the
+  other candidates, so a board left at 115200 by an earlier session is found in ~8 s rather
+  than looking dead. `--no-autobaud` turns this off. A dropped `b` command self-heals the
+  same way: the reconnect sweep finds the board still at the old rate.
+
+This is mainly insurance for **untested hosts**. 1000000 is a non-standard rate, and a
+driver that refuses it needs a way down that does not involve recompiling. Note the limit,
+though: sending `b<N>` needs a working link already, so it cannot rescue a host that will
+not talk to the board at 1 Mbaud at all — auto-baud is what covers that case, once the
+board has been stepped down from a machine that works.
 
 ## Layout
 

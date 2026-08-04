@@ -42,10 +42,14 @@
 
 static const char FIRMWARE_VERSION[] = "nicla-stream v2";
 
-// Serial is native USB-CDC on the nRF52832, not a physical UART, so this value doesn't
-// change the actual link speed -- but it's still runtime-adjustable via the 'b' command
-// (see handleCommands()) since some host CDC-ACM drivers (notably Windows' usbser.sys)
-// are picky about the declared baud and may need a lower one to behave.
+// Serial is a real UART, not USB CDC -- the NICLA variant leaves SERIAL_CDC commented out
+// and the USB port is a CMSIS-DAP probe bridging to the nRF52832's UARTE. So this is the
+// wire speed, and changing it via the 'b' command (see handleCommands()) breaks the link
+// until the host follows to the same rate. Worth having anyway: 1000000 is non-standard,
+// and a host driver that refuses it needs a way down without a recompile.
+//
+// Deliberately not persisted. Any reset returns the board to the rate below, which is the
+// only recovery path once the two ends disagree -- see setBaud().
 static uint32_t serialBaud = 1000000;
 
 // Streaming rate is runtime-adjustable via the 's' command (see handleCommands()),
@@ -270,8 +274,12 @@ static void setStreamRate(uint32_t hz) {
   nextSample     = millis();
 }
 
-// Reopens Serial at a new baud. Only meaningful as a value the host's CDC-ACM driver
-// reads back (see the serialBaud comment above) -- the host must reconnect afterwards.
+// Reopens the UART at a new baud. The host is still at the old rate when this returns, so
+// it must reconnect immediately and blind; nothing can be acknowledged across the gap.
+//
+// Lower the stream rate first ('s' before 'b'). The core's Serial busy-waits per byte, so
+// a rate the new baud cannot carry does not drop samples -- it stalls loop(), starves
+// BHY2.update(), and wedges the board until reset. python/sources.py orders it correctly.
 static void setBaud(uint32_t baud) {
   if (baud < 9600) baud = 9600;
   if (baud > 1000000) baud = 1000000;
