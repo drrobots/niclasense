@@ -16,6 +16,7 @@ import queue
 import sys
 import time
 
+from decimator import AdaptiveDecimator
 from logger import CsvLogger
 from sources import (
     SerialControl,
@@ -54,6 +55,29 @@ def parse_args(argv=None):
         "--csv", default=None,
         help="CSV to append to (default: logs/nicla_<timestamp>.csv). Use 'none' to skip logging.",
     )
+    parser.add_argument(
+        "--log-rate", type=float, default=0.0,
+        help="Write the CSV at this many Hz instead of every sample "
+             "(0 = log everything). Bursts still record at the full stream rate.",
+    )
+    parser.add_argument(
+        "--burst-on", action="append", default=None, metavar="COL:THRESH",
+        help="Trigger a full-rate burst when COL leaves its baseline by more than "
+             "THRESH. Repeatable. Default: the accelerometer and gyroscope axes.",
+    )
+    parser.add_argument(
+        "--burst-hold", type=float, default=1.0,
+        help="Seconds of full-rate logging after the last trigger.",
+    )
+    parser.add_argument(
+        "--burst-pre", type=float, default=0.25,
+        help="Seconds of full-rate history kept from before each trigger.",
+    )
+    parser.add_argument(
+        "--burst-tau", type=float, default=0.5,
+        help="Baseline time constant, seconds. Longer = slower to accept a new resting "
+             "value, so sustained motion keeps triggering for longer.",
+    )
     parser.add_argument("--window", type=float, default=30.0, help="Plot window, seconds.")
     parser.add_argument("--fps", type=float, default=20.0, help="Plot refresh rate.")
     parser.add_argument("--no-plot", action="store_true", help="Log only, no plot window.")
@@ -70,8 +94,12 @@ def default_csv_path():
     return os.path.join("logs", "nicla_%s.csv" % stamp)
 
 
-def make_drain(source, log, plot):
-    """Return a function that moves everything queued into the logger and the plot."""
+def make_drain(source, log, plot, decimator=None):
+    """Return a function that moves everything queued into the logger and the plot.
+
+    The plot always sees every sample; only the CSV is thinned. Decimation is about the
+    size of the file on disk, not about how much the host is willing to look at.
+    """
 
     def drain():
         moved = 0
@@ -82,7 +110,11 @@ def make_drain(source, log, plot):
             except queue.Empty:
                 break
             if log is not None:
-                log.write(sample)
+                if decimator is None:
+                    log.write(sample)
+                else:
+                    for kept, is_burst in decimator.feed(sample):
+                        log.write(kept, is_burst)
             if plot is not None:
                 plot.add(sample)
             moved += 1
@@ -140,11 +172,42 @@ def main(argv=None):
         print("error: %s" % exc, file=sys.stderr)
         return 1
 
+    decimator = None
+    if args.log_rate:
+        try:
+            decimator = AdaptiveDecimator(
+                rate=args.log_rate,
+                triggers=args.burst_on,
+                hold=args.burst_hold,
+                pre_roll=args.burst_pre,
+                tau=args.burst_tau,
+                burst_rate=args.rate or 200.0,
+            )
+        except ValueError as exc:
+            print("error: %s" % exc, file=sys.stderr)
+            return 1
+
     csv_path = args.csv if args.csv is not None else default_csv_path()
     log = None
     if csv_path.lower() != "none":
-        log = CsvLogger(csv_path).open()
+        # Flush about once a second either way; the default of every 200 rows is 40 s
+        # apart at 5 Hz, which makes a tail -f look stalled.
+        flush_every = max(1, int(args.log_rate)) if decimator else 200
+        log = CsvLogger(
+            csv_path, flush_every=flush_every, mark_bursts=decimator is not None
+        ).open()
         print("logging to %s" % csv_path)
+        if decimator is not None:
+            print(
+                "steady rate %g Hz, bursting to full rate for %.2gs after a trigger on %s"
+                % (
+                    decimator.rate,
+                    decimator.hold,
+                    ", ".join(
+                        "%s>%g" % (name, thr) for _i, name, thr in decimator.triggers
+                    ),
+                )
+            )
     print("reading from %s" % source.describe())
 
     source.start()
@@ -153,6 +216,12 @@ def main(argv=None):
     # protects the GUI buttons protects the flag too.
     if args.rate and isinstance(source, SerialSource):
         print(SerialControl(source).set_rate(args.rate))
+        if decimator is not None and args.rate < decimator.rate:
+            print(
+                "warning: the board is streaming at %d Hz, so bursts cannot exceed that"
+                % args.rate,
+                file=sys.stderr,
+            )
 
     plot = None
     if not args.no_plot:
@@ -165,6 +234,9 @@ def main(argv=None):
                 "rows": log.rows_written if log is not None else 0,
                 "dropped": source.dropped,
                 "malformed": getattr(source, "malformed", 0),
+                "log_rate": decimator.rate if decimator is not None else 0,
+                "bursts": decimator.bursts if decimator is not None else 0,
+                "bursting": decimator.bursting if decimator is not None else False,
             }
 
         plot = LivePlot(
@@ -172,11 +244,9 @@ def main(argv=None):
             fps=args.fps,
             title=source.describe(),
             status=status,
-            # BLE has no command channel, so the strip only appears for serial.
-            control=SerialControl(source) if isinstance(source, SerialSource) else None,
         )
 
-    drain = make_drain(source, log, plot)
+    drain = make_drain(source, log, plot, decimator)
 
     try:
         if plot is not None:
@@ -191,6 +261,8 @@ def main(argv=None):
         if log is not None:
             log.close()
         print("wrote %d rows%s" % (rows, " to %s" % csv_path if log is not None else ""))
+        if decimator is not None and log is not None:
+            print(decimator.summary())
         if getattr(source, "malformed", 0):
             print("skipped %d malformed lines" % source.malformed)
         if source.dropped:

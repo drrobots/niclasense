@@ -4,7 +4,7 @@ import csv
 import datetime
 import os
 
-from columns import CSV_COLUMNS
+from columns import BURST_COLUMN, CSV_COLUMNS
 
 
 class CsvLogger(object):
@@ -13,9 +13,14 @@ class CsvLogger(object):
     Re-running against an existing log genuinely appends: no duplicate header row.
     """
 
-    def __init__(self, path, flush_every=200):
+    def __init__(self, path, flush_every=200, mark_bursts=False):
         self.path = path
         self.flush_every = flush_every
+        # Only set when decimating. Rows are no longer evenly spaced then, so the reader
+        # needs to be able to tell a burst row from a steady one; at full rate the column
+        # would be a constant, so it is left off and the schema stays as documented.
+        self.mark_bursts = mark_bursts
+        self.columns = CSV_COLUMNS + ((BURST_COLUMN,) if mark_bursts else ())
         self.rows_written = 0
         self._handle = None
         self._writer = None
@@ -32,14 +37,17 @@ class CsvLogger(object):
         self._handle = open(self.path, "a", newline="")
         self._writer = csv.writer(self._handle)
         if needs_header:
-            self._writer.writerow(CSV_COLUMNS)
+            self._writer.writerow(self.columns)
             self._handle.flush()
         return self
 
-    def write(self, sample):
+    def write(self, sample, burst=0):
         """Write one sample tuple, stamped with the host's wall clock."""
         host_iso = datetime.datetime.now().isoformat(timespec="milliseconds")
-        self._writer.writerow((host_iso,) + tuple(sample))
+        row = (host_iso,) + tuple(sample)
+        if self.mark_bursts:
+            row += (int(burst),)
+        self._writer.writerow(row)
         self.rows_written += 1
         self._since_flush += 1
         if self._since_flush >= self.flush_every:

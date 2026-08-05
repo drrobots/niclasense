@@ -24,6 +24,11 @@ HOST_TIME_COLUMN = "host_iso"
 
 CSV_COLUMNS = (HOST_TIME_COLUMN,) + COLUMNS
 
+# Optional trailing column written when the logger is decimating: 1 for rows kept because
+# a trigger fired, 0 for rows on the steady grid. Only present when --log-rate is used,
+# so a plain full-rate capture keeps the 28-column schema the README documents.
+BURST_COLUMN = "burst"
+
 # Columns the sketch emits with zero decimals. Kept as Python ints so the CSV reads
 # "500" rather than "500.0"; everything else is a float.
 INTEGER_COLUMNS = frozenset(

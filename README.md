@@ -64,7 +64,41 @@ you get `Resource busy`.
 | `--duration` | `0` | Stop after N seconds (headless only; 0 = until Ctrl-C) |
 | `--ble-name` | `NiclaStream` | BLE local name to scan for |
 
+```
+# 5 Hz baseline, full 200 Hz for a second either side of any real motion
+../.venv/bin/python main.py --log-rate 5
+
+# Trigger on pressure instead, 3 s tail
+../.venv/bin/python main.py --log-rate 1 --burst-on press_hPa:0.5 --burst-hold 3
+```
+
 Re-running against an existing CSV **appends** to it without repeating the header row.
+Note that `--log-rate` adds a `burst` column, so a decimated log and a full-rate one are
+not append-compatible.
+
+## Adaptive logging
+
+The board always streams at 200 Hz; `--log-rate` thins the *file*, not the wire. That
+direction is the whole point. Asking the board for a low rate and raising it when
+something happens cannot work — the samples that prove something happened are exactly the
+ones that were never sent. Decimating on the host keeps full-rate history in hand, so a
+trigger can retroactively keep the samples *leading up to* it (`--burst-pre`).
+
+A trigger fires when a watched column leaves its own exponential baseline by more than its
+threshold. A baseline rather than a sample-to-sample difference because at 200 Hz that
+difference is mostly sensor noise; a baseline with a ~0.5 s time constant tracks the
+resting value and ignores it. The baseline keeps updating during a burst, so a board that
+moves to a new resting attitude stops triggering once it settles there rather than
+latching on forever — raise `--burst-tau` if you want sustained motion to keep triggering.
+
+Timing comes from the board's `t_ms`, not host arrival time: the CMSIS-DAP bridge buffers,
+so host timing bunches samples the board spaced evenly. The steady grid is phase-locked
+and restarts after each burst, so the end of a burst never dumps a backlog of overdue
+rows. A `r` command resetting the board's time origin resets the decimator with it.
+
+The extra `burst` column marks which rows came from a trigger (`1`) and which sit on the
+steady grid (`0`) — necessary because rows are no longer evenly spaced. The plot still
+receives every sample regardless; decimation is about the size of the file on disk.
 
 ## CSV schema
 
@@ -108,12 +142,12 @@ same time window, so a bump shows up in the same horizontal place everywhere.
   accelerometer, gyroscope
 - **Row 2** — magnetometer, **capture**, gas resistance
 - **Row 3** — temperature, humidity, pressure, IAQ, CO₂-eq, bVOC-eq
-- **Capture tile** — target Hz (serial only, [details](#changing-rate-and-baud-from-the-dashboard)) and
-  plot window, both editable text fields
+- **Capture tile** — log Hz, measured Hz, and the plot window (the one editable field)
 
 The capture tile occupies the slot the web dashboard gives its RGB LED picker. Since this
-tool's job is logging rather than driving the board, it reports the measured sample rate,
-the CSV being written, rows on disk, buffered samples, and any dropped or malformed
+tool's job is logging rather than driving the board, it reports the log rate (lit while a
+burst is recording, and reading `all` when not decimating), the measured sample rate, the
+CSV being written, rows on disk, burst count, buffered samples, and any dropped or malformed
 samples — that last line turns orange when either is non-zero. The **window s** field
 changes how many seconds of history every tile scrolls, live — enter a value between
 2 and 600 and hit enter; the ring buffers backing the traces grow to fit if you ask for
@@ -244,30 +278,18 @@ Three things make this less simple than it looks, all of them handled in `source
 - **Lower the rate before lowering the baud.** An oversubscribed link does not drop samples;
   it stalls `loop()`, starves `BHY2.update()`, and wedges the board.
 
-## Changing rate and baud from the dashboard
+## The dashboard does not change the board's rate
 
-The plot has a control strip along the bottom: rate buttons on the left, baud on the right.
-Both act on the live board, and both are confirmed against the banner rather than assumed —
-the greyed-out rates are the ones the current baud cannot carry.
+Neither rate nor baud is settable from the plot window. Baud was always CLI-only
+(`--baud`, `--no-autobaud`), and the rate buttons went with the arrival of `--log-rate`:
+the board is now deliberately pinned at its 200 Hz ceiling so the decimator always has
+full-rate history to draw a burst from, and a control that lowered the stream rate would
+silently cap what a burst could capture. Log rate is a capture setting, not a board
+setting.
 
-Only rates that divide 1000 exactly are offered, because the sketch computes its period as
-the integer `1000/hz`; ask for 150 and you silently get 166.
-
-Baud is the wire speed — `Serial` is a real UART (see below), not USB CDC — so both ends
-must move together. Picking a baud lowers the stream rate first, sends `b<N>`, then reopens
-the port and re-verifies. Two things keep that from being a trap:
-
-- **Baud is not persisted.** Any board reset returns it to 1 Mbaud.
-- **Auto-baud on connect.** If `--baud` yields nothing recognisable the host sweeps the
-  other candidates, so a board left at 115200 by an earlier session is found in ~8 s rather
-  than looking dead. `--no-autobaud` turns this off. A dropped `b` command self-heals the
-  same way: the reconnect sweep finds the board still at the old rate.
-
-This is mainly insurance for **untested hosts**. 1000000 is a non-standard rate, and a
-driver that refuses it needs a way down that does not involve recompiling. Note the limit,
-though: sending `b<N>` needs a working link already, so it cannot rescue a host that will
-not talk to the board at 1 Mbaud at all — auto-baud is what covers that case, once the
-board has been stepped down from a machine that works.
+`s<N>` still works over the wire, and `--rate` still sends it on connect — useful for a
+host that cannot carry 1 Mbaud. Combining it with `--log-rate` prints a warning, since
+bursts cannot exceed whatever the board is streaming.
 
 ## Layout
 

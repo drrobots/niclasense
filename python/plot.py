@@ -172,10 +172,6 @@ MAX_POINTS = 900
 
 GRID_BOTTOM_PLAIN = 0.03
 
-# The sketch computes its period as the integer 1000/hz, so anything above this is not a
-# meaningfully different rate and the firmware itself was never asked to go faster.
-MAX_TARGET_HZ = 200
-
 # Below this the trace has too few points to read; above it the ring buffer needed to
 # back it (see _resize_capacity) starts costing real memory for little benefit.
 MIN_WINDOW_S = 2.0
@@ -191,18 +187,19 @@ class LivePlot(object):
     `status` is an optional callable returning a dict of capture facts to show in the
     capture tile and header. Recognised keys: source, csv, rows, dropped, malformed.
 
-    `control` is an optional object exposing rate/max_rate and set_rate(); supplying one
-    adds an editable target-rate field to the capture tile. Baud switching stays a
-    CLI-only affair (see --baud/--no-autobaud in main.py); the GUI no longer exposes it.
+    Neither rate nor baud is settable from the GUI. Baud was always CLI-only (see
+    --baud/--no-autobaud), and the stream rate followed it out once logging gained its
+    own rate: the board is deliberately pinned at its 200 Hz ceiling so the decimator
+    always has full-rate history to draw a burst from, and a button that lowered it would
+    silently cap what a burst can capture. Log rate is a capture setting now, not a board
+    setting -- see --log-rate.
     """
 
-    def __init__(self, window=30.0, sample_hz=200.0, fps=20.0, title="", status=None,
-                 control=None):
+    def __init__(self, window=30.0, sample_hz=200.0, fps=20.0, title="", status=None):
         self.window = float(window)
         self.fps = fps
         self.title = title
         self._status = status
-        self._control = control
         self._sample_hz = sample_hz
         # Headroom of 2x so a faster-than-nominal stream still fills the window.
         capacity = max(100, int(self.window * sample_hz * 2))
@@ -325,7 +322,7 @@ class LivePlot(object):
             fontfamily=FONT, fontsize=10, color=TEXT,
         )
         axes.text(
-            0.0, 0.86, "target Hz",
+            0.0, 0.86, "log Hz",
             transform=axes.transAxes, va="center", ha="left",
             fontfamily=FONT, fontsize=9, color=MUTED,
         )
@@ -333,6 +330,11 @@ class LivePlot(object):
             0.62, 0.86, "actual Hz",
             transform=axes.transAxes, va="center", ha="left",
             fontfamily=FONT, fontsize=9, color=MUTED,
+        )
+        log_rate = axes.text(
+            0.0, 0.6, "--",
+            transform=axes.transAxes, va="center", ha="left",
+            fontfamily=FONT, fontsize=24, color=TEXT,
         )
         actual = axes.text(
             0.62, 0.6, "--",
@@ -368,18 +370,10 @@ class LivePlot(object):
             fontfamily=FONT, fontsize=9.5, color=TEXT,
         )
         capture = {
-            "axes": axes, "actual": actual, "message": message,
+            "axes": axes, "actual": actual, "log_rate": log_rate, "message": message,
             "detail_top": detail_top, "window_suffix": window_suffix,
             "detail_drops": detail_drops,
         }
-        capture["target_box"] = (
-            self._make_editable_box(
-                axes, 0.02, 0.64, 0.26, 0.16,
-                str(int(self._control.rate)) if self._control.rate else "",
-                self._target_submitted,
-            )
-            if self._control is not None else None
-        )
         capture["window_box"] = self._make_editable_box(
             axes, 0.22, 0.176, 0.13, 0.09, str(int(self.window)), self._window_submitted
         )
@@ -414,26 +408,6 @@ class LivePlot(object):
         box.cursor.set_color(TEXT)
         box.on_submit(on_submit)
         return box
-
-    def _target_submitted(self, text):
-        control = self._control
-        text = text.strip()
-        if not text:
-            return
-        try:
-            hz = int(float(text))
-        except ValueError:
-            self._announce_capture("enter a number", failed=True)
-            return
-        hz = max(1, min(hz, MAX_TARGET_HZ))
-        self._capture["target_box"].set_val(str(hz))
-        result = control.set_rate(hz)
-        # The actual-Hz readout already shows a successful change; only failures are
-        # worth a message of their own.
-        if "failed" in result or "needs" in result:
-            self._announce_capture(result, failed=True)
-        else:
-            self._announce_capture("")
 
     def _window_submitted(self, text):
         text = text.strip()
@@ -491,6 +465,16 @@ class LivePlot(object):
         hz = self._measured_hz(times)
         self._capture["actual"].set_text("%.0f" % hz if hz else "--")
 
+        # Blank rather than 0 when not decimating: every sample is being written, and a
+        # number there would invite reading it as a limit.
+        log_rate = status.get("log_rate")
+        self._capture["log_rate"].set_text(
+            ("%g" % log_rate) if log_rate else "all"
+        )
+        # Lit while a burst is recording, which is the one piece of decimator state that
+        # is genuinely live rather than configuration.
+        self._capture["log_rate"].set_color(ACCENT if status.get("bursting") else TEXT)
+
         # The description carries the board's banner, so it restates rate and baud after
         # every change -- and this is measured independently of the buttons.
         if status.get("source"):
@@ -502,6 +486,8 @@ class LivePlot(object):
             "file   %s" % _shorten(csv_path, 34),
             "rows   %s" % _thousands(rows),
         ]
+        if status.get("log_rate"):
+            top_lines[1] += "   bursts %s" % _thousands(status.get("bursts", 0))
         self._capture["detail_top"].set_text("\n".join(top_lines))
         self._capture["window_suffix"].set_text(
             "s      buffered %s" % _thousands(len(self._t))
