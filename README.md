@@ -55,6 +55,7 @@ you get `Resource busy`.
 
 | Flag | Default | Meaning |
 |---|---|---|
+| `--config` | none | INI file setting any of the flags below |
 | `--port` | auto | Serial device |
 | `--baud` | `1000000` | Baud to try first; the sketch boots at 1000000 |
 | `--no-autobaud` | off | Fail instead of trying other rates when `--baud` yields nothing |
@@ -77,6 +78,52 @@ you get `Resource busy`.
 Re-running against an existing CSV **appends** to it without repeating the header row.
 Note that `--log-rate` adds a `burst` column, so a decimated log and a full-rate one are
 not append-compatible.
+
+## Configuration file
+
+Every flag above is also a config key, so a setup that takes a paragraph of shell can live
+in a file next to the logs it produces. `python/example.conf` lists all of them with their
+defaults; copy it and delete what you are not changing.
+
+```bash
+../.venv/bin/python main.py --config overnight.conf
+
+# The file describes the setup; flags vary one run of it
+../.venv/bin/python main.py --config overnight.conf --window 60 --duration 300
+```
+
+```ini
+# overnight.conf -- headless, decimated, plot it when I feel like it
+csv = runs/overnight.csv
+no_plot = true
+listen = true
+
+[burst]
+log_rate = 5
+burst_hold = 3
+burst_on =
+    ax_g:0.15
+    press_hPa:0.5
+```
+
+**Precedence is defaults < file < command line.** Key names are the flag names with the
+leading dashes dropped; `log-rate` and `log_rate` both work. Section headers are for the
+reader only — any key is accepted under any heading, and keys before the first heading are
+fine — because a correctly spelled key silently ignored for sitting under the wrong
+heading is the worst way for a config file to fail. Misspelled keys *are* an error, with a
+suggestion, since a typo would otherwise look identical to a setting that had no effect.
+
+Two edges inherited from argparse:
+
+- **`--burst-on` on the command line adds to the file's triggers** rather than replacing
+  them, because it is a repeatable flag. Leave `burst_on` out of the file when you want
+  a run's triggers to start from a clean slate.
+- **On/off keys can be turned on by a file but not back off from the command line**:
+  there is no `--plot` to counter a `no_plot = true`. Comment the key out instead.
+
+`--config` is read in its own pass before the rest of the command line, and the loader is
+driven by the parser itself (`config.py` takes it as an argument), so a flag added to
+`main.py` becomes settable from a file with no second list to keep in step.
 
 ## Adaptive logging
 
@@ -387,6 +434,8 @@ bursts cannot exceed whatever the board is streaming.
 | `python/bench/runbench.py` | Drives the benchmark, reports Hz and link use per encoding |
 | `python/bench/capture.py` | Raw capture: bytes/line, achieved rate, dropped samples |
 | `python/columns.py` | Single source of truth for the schema |
+| `python/config.py` | Reads `--config`, typed from main.py's own parser |
+| `python/example.conf` | Every switch as a config key, with defaults |
 | `python/sources.py` | `SerialSource` and `StreamSource`, both threaded into a queue |
 | `python/logger.py` | CSV appender, header written only for new files |
 | `python/decimator.py` | Rate limiting and burst-on-change for the CSV |

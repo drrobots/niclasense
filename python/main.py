@@ -7,11 +7,17 @@ socket, and dashboard.py plots that from a separate process. So a capture can ru
 for hours while plots come and go over it, without the logging ever noticing. See hub.py
 for the protocol.
 
+Every switch is also settable from an INI file (--config); see config.py and
+example.conf. The command line still wins, so a file describes a standing setup and
+flags vary one run of it.
+
 Examples:
     python main.py                                   # auto-detect port, log + plot
     python main.py --csv runs/walk.csv --window 60
     python main.py --no-plot --duration 15           # headless capture
     python main.py --no-plot --listen                # headless, plot it with dashboard.py
+    python main.py --config overnight.conf           # a setup that lives in a file
+    python main.py --config overnight.conf --window 60   # ...with one thing changed
     python main.py --list-ports
 """
 
@@ -21,6 +27,7 @@ import os
 import sys
 import time
 
+import config
 from decimator import AdaptiveDecimator
 from hub import DEFAULT_ENDPOINT, SampleHub, parse_endpoint
 from logger import CsvLogger
@@ -34,10 +41,15 @@ from sources import (
 )
 
 
-def parse_args(argv=None):
+def build_parser():
     parser = argparse.ArgumentParser(
         description="Stream, log, and plot Nicla Sense ME sensor data.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--config", default=None, metavar="FILE",
+        help="INI file setting any of the options below. Anything also given on the "
+             "command line wins, except --burst-on, which adds to the file's triggers.",
     )
     parser.add_argument("--port", default=None, help="Serial port (default: auto-detect).")
     parser.add_argument(
@@ -93,6 +105,31 @@ def parse_args(argv=None):
              % DEFAULT_ENDPOINT,
     )
     parser.add_argument("--list-ports", action="store_true", help="List serial ports and exit.")
+    return parser
+
+
+def parse_args(argv=None):
+    """Command line over config file over defaults.
+
+    Two passes: --config is read on its own first, because the file's values become the
+    parser's defaults, and a default has to exist before the arguments that override it
+    are parsed. Loading is driven by the parser itself, so a flag added above needs no
+    corresponding change in config.py.
+    """
+    parser = build_parser()
+
+    finder = argparse.ArgumentParser(add_help=False)
+    finder.add_argument("--config", default=None)
+    preview, _rest = finder.parse_known_args(argv)
+
+    if preview.config is not None:
+        try:
+            parser.set_defaults(**config.load(preview.config, parser))
+        except config.ConfigError as exc:
+            # Through parser.error so a bad file fails the way a bad flag does: usage,
+            # message, exit 2 -- rather than a traceback.
+            parser.error(str(exc))
+
     return parser.parse_args(argv)
 
 
@@ -149,6 +186,9 @@ def main(argv=None):
         for device, description in ports:
             print("%-40s %s" % (device, description))
         return 0
+
+    if args.config is not None:
+        print("config from %s" % args.config)
 
     source = create_source(args)
     try:
