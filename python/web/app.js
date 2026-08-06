@@ -371,10 +371,17 @@
   // ---------------------------------------------------------------------
   // Sample ingest
 
+  /* The previous row's clock and counter. Kept here rather than read back out of the
+     buffers because ingest() has to judge a row before deciding whether to store it. */
+  var lastT = 0;
+  var lastSeq = null;
+
   function resetBuffers() {
     Object.keys(store).forEach(function (name) {
       store[name].reset();
     });
+    lastT = 0;
+    lastSeq = null;
   }
 
   function ingest(text) {
@@ -390,12 +397,27 @@
         continue;
       }
       var t = +fields[colIndex.t_ms] / 1000.0;
+      var seq = +fields[colIndex.seq];
       /* t_ms restarts from zero on every board reset. Carrying the old samples across one
          draws a line back through time and wrecks every tile's scale until the window
-         slides past it, so drop what came before. */
-      if (timeCol.n > 0 && t < timeCol.data[timeCol.n - 1]) {
-        resetBuffers();
+         slides past it, so drop what came before.
+
+         But a backwards t_ms on its own is not proof of a reset, and treating it as one
+         made the dashboard wipe itself at random: a row torn by a host-side buffer
+         overrun can lose a digit out of t_ms and still arrive with the right number of
+         fields, and a reconnecting EventSource used to replay rows already drawn. A real
+         reset restarts the board's sequence counter along with its clock, so require
+         both. A row that moves only one of them backwards is not a reset and is not
+         drawable either -- it is a row from the past -- so skip it. */
+      if (lastSeq !== null && (t < lastT || seq <= lastSeq)) {
+        if (t < lastT && seq < lastSeq) {
+          resetBuffers();
+        } else {
+          continue;
+        }
       }
+      lastT = t;
+      lastSeq = seq;
       timeCol.push(t);
       for (var j = 0; j < names.length; j++) {
         var name = names[j];

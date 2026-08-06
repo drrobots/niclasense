@@ -95,6 +95,7 @@ class AdaptiveDecimator(object):
         self._in_burst = False
         self._next_due = None
         self._last_t = None
+        self._last_seq = None
         self._last_written_seq = None
 
     # -- internals ---------------------------------------------------------------
@@ -147,14 +148,22 @@ class AdaptiveDecimator(object):
         self.seen += 1
         now = sample[T_MS] / 1000.0
 
-        # `r` on the serial link resets the board's time origin and sequence counter.
-        # Without this the phase accumulator would sit years in the future and nothing
-        # would ever be written again.
-        if self._last_t is not None and now < self._last_t:
+        # `r` on the serial link, or a board reboot, restarts the time origin and the
+        # sequence counter together. Without noticing, the phase accumulator would sit years
+        # in the future and nothing would ever be written again.
+        #
+        # Both counters have to move back, not just the clock. A row torn by a host-side
+        # buffer overrun can lose a digit out of t_ms and still parse (see _consistent() in
+        # sources.py, which rejects most of them); treating one of those as a reset throws
+        # away the pre-roll and rephases the steady grid for a sample that never happened.
+        seq = sample[SEQ]
+        if (self._last_t is not None and now < self._last_t
+                and (self._last_seq is None or seq < self._last_seq)):
             self._reset_state()
 
         dt = self.period if self._last_t is None else max(now - self._last_t, 1e-6)
         self._last_t = now
+        self._last_seq = seq
 
         hot = self._update_baseline(sample, dt)
         if hot:

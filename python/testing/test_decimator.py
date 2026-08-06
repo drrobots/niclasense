@@ -199,6 +199,24 @@ class BoardReset(unittest.TestCase):
         self.assertGreater(decimator.steady_rows, before)
         self.assertEqual(written[0][1], 0)
 
+    def test_a_torn_row_is_not_a_reset(self):
+        """t_ms alone going backwards is a damaged row, not a reboot.
+
+        sources._consistent() rejects most of these before they get here, but the rule has
+        to hold at both ends: rephasing the grid and dropping the pre-roll for a sample the
+        board never sent is how one lost byte turned into a visible fault upstream.
+        """
+        decimator = AdaptiveDecimator(rate=5.0)
+        run(decimator, support.ramp(2000, hz=200.0))
+        pre_depth = len(decimator._pre)
+        self.assertTrue(pre_depth, "no pre-roll to lose")
+
+        # seq keeps climbing; only the clock jumps back. Nothing the board can do.
+        torn = support.sample(seq=2000, t_ms=41)
+        run(decimator, [torn])
+        self.assertIsNotNone(decimator._next_due, "the grid was rephased")
+        self.assertTrue(decimator._pre, "the pre-roll was thrown away")
+
     def test_the_reset_does_not_count_as_a_trigger(self):
         decimator = AdaptiveDecimator(rate=5.0)
         run(decimator, support.ramp(400, hz=200.0, ax_g=0.9))

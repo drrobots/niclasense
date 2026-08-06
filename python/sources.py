@@ -60,6 +60,24 @@ READ_TIMEOUT = 0.1
 # are not this board's stream, so the partial buffer is dropped rather than grown.
 MAX_LINE_BYTES = 8192
 
+# Consecutive rows rejected by _consistent() before it believes the stream instead of its
+# own reference. Five is well past any plausible run of torn lines and still instant.
+RESYNC_AFTER = 5
+
+# Whether opening the port reboots the board on this platform.
+#
+# _open_at() deasserts DTR before opening precisely to avoid that, and on POSIX it works:
+# pyserial applies the line state as part of open(), right after it configures the tty
+# (serialposix.py). Windows cannot offer the same guarantee. CreateFile opens the port with
+# whatever DCB the driver already holds -- normally DTR asserted -- and pyserial's
+# DTR_CONTROL_DISABLE only lands in the SetCommState that follows, so a pulse escapes
+# between the two calls and the CMSIS-DAP probe turns it into an nRF52 reset.
+#
+# Nothing here can suppress it, so the code stops making it worse instead: the first baud
+# is given time to boot rather than being abandoned for the next candidate, since every
+# extra candidate is another open and therefore another reset.
+OPEN_RESETS_BOARD = sys.platform == "win32"
+
 
 def safe_rate_for(baud):
     """Fastest offered rate whose CSV stream fits comfortably in `baud`."""
@@ -106,6 +124,10 @@ class _ThreadedSource(object):
         self.error = None
         self.dropped = 0
         self.malformed = 0
+        # Previous row's counters, for the consistency check in _consume_line().
+        self._last_seq = None
+        self._last_t = None
+        self._rejected = 0
         self.banner = None
         # Whatever the board last reported in its banner; None until a header arrives.
         self.stream_hz = None
@@ -182,7 +204,48 @@ class _ThreadedSource(object):
         except ValueError:
             self.malformed += 1
             return
+        if not self._consistent(sample):
+            self.malformed += 1
+            return
         self._emit(sample)
+
+    def _consistent(self, sample):
+        """Reject a row whose clock disagrees with its counter.
+
+        A field-count check is not enough to catch a torn line. Bytes go missing in runs --
+        a host-side buffer overrun drops whatever was in flight -- and a run that lands
+        inside one field can leave a row that still has 27 commas and still parses. The
+        common case is a digit lost out of t_ms: 1904613 arrives as 190413, twenty minutes
+        into the past, in a row that is otherwise perfectly well formed.
+
+        The board gives us two independent clocks, and only one of them can be wrong at a
+        time. Within a boot, seq increments every sample and t_ms never decreases, so a row
+        that moves t_ms backwards while seq keeps climbing cannot have come off the board
+        that way. Both going backwards together is a reset -- boot or an `r` command -- and
+        is passed through, because that is real and downstream has to see it.
+
+        The cost of getting this wrong is out of proportion to one bad sample: the browser
+        dashboard treats a backwards t_ms as a reset and clears every tile, so a single
+        torn row wipes the window (see ingest() in web/app.js).
+        """
+        seq, t_ms = sample[0], sample[1]
+        if self._last_t is None:
+            self._last_seq, self._last_t = seq, t_ms
+            return True
+        backwards_time = t_ms < self._last_t
+        backwards_seq = seq < self._last_seq
+        if backwards_time != backwards_seq and self._rejected < RESYNC_AFTER:
+            # Exactly one went back: nothing the board does looks like this.
+            self._rejected += 1
+            return False
+        # Either the row is consistent, or it is the last of a run long enough that the
+        # reference itself is what must be wrong -- a corrupted row we accepted, or t_ms
+        # wrapping its uint32 at 49.7 days of uptime. Believing the stream over our own
+        # bookkeeping costs a handful of rows; the alternative is rejecting every row from
+        # here to the end of the capture.
+        self._rejected = 0
+        self._last_seq, self._last_t = seq, t_ms
+        return True
 
     def _consume_comment(self, line):
         # A banner mid-stream means someone sent 'h' -- which set_rate() does on every
@@ -257,6 +320,13 @@ class SerialSource(_ThreadedSource):
                     "Run with --list-ports to see what is available."
                 )
 
+        if OPEN_RESETS_BOARD:
+            sys.stderr.write(
+                "note: on Windows, opening the port resets the board -- t_ms and seq "
+                "restart, and BSEC's calibration goes with them. Pass --no-autobaud to "
+                "keep a failed connect from resetting it once per baud.\n"
+            )
+
         order = [self.baud]
         if self.autobaud:
             order += [b for b in BAUD_CHOICES if b != self.baud]
@@ -314,7 +384,16 @@ class SerialSource(_ThreadedSource):
         # enough and keeps the auto-baud sweep short.
         outcome = "none"
         failure = None
-        for _ in range(1 if probe else 3):
+        # A probe is only telling signal from noise, so one ask keeps the sweep short. The
+        # first candidate gets more, and more again where the open just reset the board:
+        # setup() runs BHY2.begin() and ten sensor begin()s before it prints anything, and
+        # giving up on the right baud while the board is still booting sends the sweep off
+        # to reset it once more at every wrong one.
+        if probe:
+            attempts = 1
+        else:
+            attempts = 5 if OPEN_RESETS_BOARD else 3
+        for _ in range(attempts):
             try:
                 port.reset_input_buffer()
                 port.write(b"h")

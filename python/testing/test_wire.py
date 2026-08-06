@@ -18,7 +18,13 @@ import unittest
 import support
 from columns import COLUMNS
 from hub import DEFAULT_ENDPOINT, format_sample, parse_endpoint
-from sources import SourceError, _ThreadedSource, check_schema, safe_rate_for
+from sources import (
+    RESYNC_AFTER,
+    SourceError,
+    _ThreadedSource,
+    check_schema,
+    safe_rate_for,
+)
 
 
 class RoundTrip(unittest.TestCase):
@@ -210,6 +216,61 @@ class Endpoints(unittest.TestCase):
         """
         self.assertEqual(parse_endpoint("[::1]:8765"), ("[::1]", 8765))
         self.assertEqual(parse_endpoint("host:80:80"), ("host:80", 80))
+
+
+class TornRows(unittest.TestCase):
+    """A row can lose bytes and still have 27 fields, so the field count is not enough.
+
+    Byte loss comes in runs -- a host buffer overrun drops whatever was in flight -- and a
+    run landing inside one field leaves a line that parses. The expensive case is a digit
+    lost out of t_ms, because every consumer reads a backwards t_ms as a board reset: the
+    decimator rephases its grid and the browser dashboard clears every tile. So the check
+    is that t_ms and seq have to disagree with each other before a row is believed.
+    """
+
+    def feed(self, source, *samples):
+        for one in samples:
+            source._consume_line(format_sample(one))
+        return source
+
+    def test_a_digit_lost_from_t_ms_is_rejected(self):
+        source = _ThreadedSource()
+        self.feed(source, support.sample(seq=1, t_ms=1904613))
+        # 1904613 with a digit gone: parses cleanly, twenty minutes in the past.
+        self.feed(source, support.sample(seq=2, t_ms=190413))
+        self.assertEqual(source.queue.qsize(), 1)
+        self.assertEqual(source.malformed, 1)
+
+    def test_a_real_reset_moves_both_counters_and_is_passed_through(self):
+        """A reboot or an `r` command restarts the clock and the counter together."""
+        source = _ThreadedSource()
+        self.feed(source, support.sample(seq=4000, t_ms=20000))
+        self.feed(source, support.sample(seq=0, t_ms=0))
+        self.assertEqual(source.queue.qsize(), 2)
+        self.assertEqual(source.malformed, 0)
+
+    def test_a_counter_that_goes_back_alone_is_rejected_too(self):
+        """The board cannot do this either; only a torn seq field can."""
+        source = _ThreadedSource()
+        self.feed(source, support.sample(seq=5000, t_ms=25000))
+        self.feed(source, support.sample(seq=50, t_ms=25005))
+        self.assertEqual(source.malformed, 1)
+
+    def test_ordinary_streaming_is_untouched(self):
+        source = _ThreadedSource()
+        self.feed(source, *support.ramp(400))
+        self.assertEqual(source.queue.qsize(), 400)
+        self.assertEqual(source.malformed, 0)
+
+    def test_a_persistent_disagreement_resyncs_rather_than_rejecting_forever(self):
+        """t_ms wraps its uint32 at 49.7 days of uptime, and a bad reference must not
+        cost every row after it."""
+        source = _ThreadedSource()
+        self.feed(source, support.sample(seq=10, t_ms=4294967000))
+        for i in range(RESYNC_AFTER + 3):
+            self.feed(source, support.sample(seq=11 + i, t_ms=5 * i))
+        self.assertTrue(source.queue.qsize() > 1, "never resynced")
+        self.assertEqual(source.malformed, RESYNC_AFTER)
 
 
 class LinkBudget(unittest.TestCase):

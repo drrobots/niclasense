@@ -179,6 +179,12 @@ class WebHub(object):
         # import for no gain over a list we slice; it is only touched once per sample.
         self._prime = []
         self._status = None
+        # Every row served gets a number, and the number goes out as the SSE event id. A
+        # browser that reconnects sends the last one it saw back in Last-Event-ID, which is
+        # what lets attach() hand it only what it missed. Ids are per-hub and monotonic;
+        # _prime_first_id is the id of _prime[0], so the id of _prime[k] needs no storage.
+        self._next_id = 0
+        self._prime_first_id = 0
 
     # -- lifecycle -------------------------------------------------------------
 
@@ -233,14 +239,18 @@ class WebHub(object):
         """Queue one sample for every open tab. Called from the drain loop; never blocks."""
         line = format_sample(sample)
         with self._lock:
+            row_id = self._next_id
+            self._next_id += 1
             self._prime.append(line)
             if len(self._prime) > PRIME_ROWS:
                 # Trimmed in blocks rather than one row at a time: del of a leading slice
                 # is a single memmove, where popping per sample is a memmove per sample.
-                del self._prime[:len(self._prime) - PRIME_ROWS]
+                dropped = len(self._prime) - PRIME_ROWS
+                del self._prime[:dropped]
+                self._prime_first_id += dropped
             clients = tuple(self._clients)
         for client in clients:
-            client.put(("data", line))
+            client.put(("data", (row_id, line)))
 
     def push_status(self, status):
         """Publish the capture's status dict to every tab, and to tabs not yet open."""
@@ -261,19 +271,36 @@ class WebHub(object):
 
     # -- client registry -------------------------------------------------------
 
-    def attach(self):
-        """Register a new tab, and hand back what it has missed.
+    def attach(self, last_id=None):
+        """Register a new tab, and hand back the (id, row) pairs it has missed.
 
         The backlog is returned rather than queued because it is three times the size of a
         client's queue: pushing it through would evict its own oldest rows and leave the
         tab with whatever fitted, which looks like a page that only ever buffers ten
         seconds no matter how long it has been open. The caller writes it straight out.
+
+        `last_id` is the Last-Event-ID a reconnecting browser sends, and it is the whole
+        difference between a blip and a visible fault. EventSource reconnects on its own
+        without reloading the page, so the tab still holds every sample it had; replaying
+        the full backlog to it hands it rows it drew thirty seconds ago, and app.js reads
+        a row older than its newest as a board reset and clears every tile. Resuming from
+        the id instead means a reconnect costs the rows that were in flight and nothing
+        else. A tab that has fallen further behind than we still hold gets what there is:
+        a gap jumps the traces forward, which is honest and not a wipe.
         """
         client = _Client()
         with self._lock:
             self._clients.append(client)
             self.served += 1
-            return client, list(self._prime), self._status
+            start = 0
+            if last_id is not None:
+                start = min(max(last_id + 1 - self._prime_first_id, 0), len(self._prime))
+            first_id = self._prime_first_id + start
+            backlog = list(
+                zip(range(first_id, first_id + len(self._prime) - start),
+                    self._prime[start:])
+            )
+            return client, backlog, self._status
 
     def detach(self, client):
         with self._lock:
@@ -346,7 +373,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
 
     def _serve_stream(self):
         hub = self.hub_ref
-        client, backlog, status = hub.attach()
+        client, backlog, status = hub.attach(self._last_event_id())
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-store")
@@ -368,6 +395,21 @@ class _StreamHandler(BaseHTTPRequestHandler):
             pass
         finally:
             hub.detach(client)
+
+    def _last_event_id(self):
+        """The id a reconnecting EventSource reports, or None for a tab opening fresh.
+
+        The browser sets the header itself from the last `id:` it saw; nothing in app.js
+        has to remember anything. A value we cannot read as a number is treated as absent,
+        which costs that tab one full replay rather than an error.
+        """
+        raw = self.headers.get("Last-Event-ID")
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
 
     def _pump(self, client):
         """Move one client's backlog to its socket, batching rows into events.
@@ -397,7 +439,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
                     return
                 kind, payload = item
                 if kind == "data":
-                    rows.append(payload)
+                    rows.append(payload)  # (id, line)
                 else:
                     # Status and lifecycle events are named, and jump the queue of rows
                     # behind them rather than waiting out the batch they landed in.
@@ -415,11 +457,19 @@ class _StreamHandler(BaseHTTPRequestHandler):
                 last_write = time.monotonic()
 
     def _flush(self, rows):
+        """Write one event carrying many rows, as (id, line) pairs.
+
+        The browser joins the data lines with newlines and hands the block to a single
+        onmessage call. The trailing `id:` is the id of the *last* row in the event, which
+        is what EventSource stores and sends back as Last-Event-ID after a reconnect -- so
+        resuming lands on the first row this tab has not already drawn.
+        """
         if not rows:
             return
-        # One event carrying many data: lines. The browser joins them with newlines and
-        # hands the block to a single onmessage call.
-        self._write("".join("data: %s\n" % row for row in rows) + "\n")
+        self._write(
+            "".join("data: %s\n" % line for _id, line in rows)
+            + "id: %d\n\n" % rows[-1][0]
+        )
 
     def _write(self, text):
         self.wfile.write(text.encode("ascii", "replace"))

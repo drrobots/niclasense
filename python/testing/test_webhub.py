@@ -237,6 +237,90 @@ class Stream(ServerFixture):
         return False
 
 
+class Resuming(ServerFixture):
+    """A reconnecting EventSource must not be handed rows it has already drawn.
+
+    The browser reconnects on its own after any blip, without reloading the page, so the
+    tab keeps every sample it had. Replaying the backlog to it puts a thirty-second-old
+    row after its newest one, and app.js reads a row older than its last as a board reset
+    and clears every tile -- which is what made the dashboard wipe itself at random
+    intervals. The id on each event is what lets the reconnect resume instead.
+    """
+
+    def open_stream_from(self, last_id):
+        sock = socket.create_connection(("127.0.0.1", self.port), timeout=5.0)
+        self.addCleanup(sock.close)
+        sock.sendall(
+            b"GET /stream HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+            b"Accept: text/event-stream\r\nLast-Event-ID: %d\r\n\r\n" % last_id
+        )
+        buffer = b""
+        while b"\r\n\r\n" not in buffer:
+            buffer += sock.recv(4096)
+        _headers, _sep, rest = buffer.partition(b"\r\n\r\n")
+        return sock, rest
+
+    @staticmethod
+    def ids(body):
+        return [int(line[4:]) for line in body.decode("ascii").splitlines()
+                if line.startswith("id: ")]
+
+    def test_events_carry_the_id_of_their_last_row(self):
+        for one in support.ramp(10):
+            self.hub.broadcast(one)
+        sock, rest = self.open_stream()
+        body = rest + self.read_for(sock, 0.6)
+        self.assertEqual(self.ids(body)[-1], 9)
+
+    def test_a_reconnect_resumes_instead_of_replaying(self):
+        for one in support.ramp(200):
+            self.hub.broadcast(one)
+        sock, rest = self.open_stream()
+        first = rest + self.read_for(sock, 0.6)
+        self.assertEqual(first.count(b"data: "), 200)
+        last_id = self.ids(first)[-1]
+        sock.close()
+
+        for one in support.ramp(50, start_seq=200, start_ms=1000):
+            self.hub.broadcast(one)
+
+        again, rest2 = self.open_stream_from(last_id)
+        body = rest2 + self.read_for(again, 0.6)
+        # Only the fifty it missed, and nothing it had already drawn.
+        self.assertEqual(body.count(b"data: "), 50)
+        self.assertIn(b"200,1000", body)
+
+    def test_a_tab_with_no_id_still_gets_the_whole_backlog(self):
+        """A genuinely new tab has nothing to resume from and wants a full window."""
+        for one in support.ramp(120):
+            self.hub.broadcast(one)
+        sock, rest = self.open_stream()
+        body = rest + self.read_for(sock, 0.6)
+        self.assertEqual(body.count(b"data: "), 120)
+
+    def test_a_tab_that_fell_off_the_backlog_gets_what_is_left(self):
+        """Further behind than the hub still holds: a forward gap, never a replay."""
+        for one in support.ramp(PRIME_ROWS + 400):
+            self.hub.broadcast(one)
+        sock, rest = self.open_stream_from(5)
+        body = rest + self.read_for(sock, 1.5)
+        self.assertEqual(body.count(b"data: "), PRIME_ROWS)
+        self.assertLess(self.ids(body)[0], self.ids(body)[-1])
+
+    def test_an_unreadable_id_is_treated_as_a_new_tab(self):
+        for one in support.ramp(30):
+            self.hub.broadcast(one)
+        sock = socket.create_connection(("127.0.0.1", self.port), timeout=5.0)
+        self.addCleanup(sock.close)
+        sock.sendall(b"GET /stream HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                     b"Last-Event-ID: banana\r\n\r\n")
+        buffer = b""
+        while b"\r\n\r\n" not in buffer:
+            buffer += sock.recv(4096)
+        body = buffer.partition(b"\r\n\r\n")[2] + self.read_for(sock, 0.6)
+        self.assertEqual(body.count(b"data: "), 30)
+
+
 class PortInUse(unittest.TestCase):
     def test_a_second_dashboard_says_what_is_wrong(self):
         port = support.free_port()
