@@ -1,0 +1,87 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+Firmware for an Arduino Nicla Sense ME that streams all 27 sensor columns as CSV over a
+1 Mbaud UART, plus a Python host side that logs, plots live, serves the stream over TCP,
+and views finished logs. There is no test suite and no linter; verification is running the
+programs against the board (or against a captured CSV).
+
+`README.md` is unusually complete — it documents the measured throughput ceilings, the
+sensor scale factors, the BSEC calibration behaviour, and the reasoning behind the
+adaptive-logging and split-process designs. Read the relevant section before changing
+anything in those areas; most of the surprising code has a paragraph explaining why.
+
+## Commands
+
+Run everything through the project virtualenv, from `python/`:
+
+```bash
+cd python && ../.venv/bin/python main.py
+```
+
+```bash
+arduino-cli compile --fqbn arduino:mbed_nicla:nicla_sense nicla_stream && arduino-cli upload -p /dev/cu.usbmodemEE7B25F12 --fqbn arduino:mbed_nicla:nicla_sense nicla_stream
+```
+
+| Task | Command (from `python/`) |
+|---|---|
+| Headless capture, no window | `../.venv/bin/python main.py --no-plot --duration 15` |
+| Capture serving attachable viewers | `../.venv/bin/python main.py --no-plot --listen` |
+| Attach a live dashboard | `../.venv/bin/python dashboard.py` |
+| View a finished CSV | `../.venv/bin/python view.py [path-or-dir]` |
+| Which ports exist | `../.venv/bin/python main.py --list-ports` |
+| Confirm firmware holds its rate | `../.venv/bin/python bench/capture.py` |
+| Encoding throughput benchmark | flash `nicla_bench`, then `../.venv/bin/python bench/runbench.py 1000000 5` |
+
+The Arduino IDE's Serial Monitor holds the port exclusively; close it or connects fail with
+`Resource busy`.
+
+## Architecture
+
+The host side is a source → queue → sinks pipeline. `pipeline.py` is the seam and imports
+no entry point, which is what keeps `main.py` and `dashboard.py` independent of each other.
+
+- `sources.py` — `SerialSource` (the board) and `StreamSource` (a `--listen` capture) are
+  interchangeable subclasses of `_ThreadedSource`; both push parsed sample tuples onto
+  `source.queue` from a reader thread. `plot.py` cannot tell which it has. `SerialControl`
+  sends `s`/`b`/`r`/`h` commands byte-by-byte with banner verification — the board silently
+  drops bursts (no RX ring buffer), so this is not incidental caution.
+- `pipeline.py` — `make_drain(source, sinks)` moves queued samples to plain callables. Only
+  the CSV sink is ever decimated; plots and attached viewers always see all 200 Hz.
+- `decimator.py` — `AdaptiveDecimator` thins the *file*, keeping a full-rate ring so a
+  trigger can retroactively keep pre-trigger samples. Timing is from the board's `t_ms`.
+- `logger.py` / `hub.py` — CSV appender (header only for new files) and the TCP fan-out.
+  The hub re-emits the board's own wire format, so `nc` is a valid client and the attaching
+  end reuses the board parser.
+- `plot.py` — the live tile grid, shared by `main.py` and `dashboard.py`. `TILES` declares
+  widgets, `PLACEMENT` positions them on a 12-column grid; `view.py` imports both so the
+  offline viewer matches the live one. Keep `min_span` on new tiles or a resting board
+  autoscales its own quantization noise into dramatic-looking staircases.
+- `view.py` — offline viewer. Min/max envelope decimation (not striding, which deletes
+  short impacts), plus tolerant loading of torn final rows and mid-capture board resets.
+- `columns.py` — the schema, and the only place column order lives on the host.
+- `config.py` — `--config` INI loader for `main.py`. Types are derived from the parser
+  passed in, not restated, so new flags are configurable for free; precedence is
+  defaults < file < command line, via `parser.set_defaults()`.
+
+Firmware: `nicla_stream.ino` formats a whole line into a `LineBuffer` and issues one
+`write()`, because the core's `Serial` is an mbed `UnbufferedSerial` that busy-waits per
+byte. Commands accumulate digits until a non-digit terminator, which is itself acted on.
+
+## Conventions
+
+- **Schema changes are two-sided.** The column list in `nicla_stream.ino` and `COLUMNS` in
+  `columns.py` must match; `SerialSource` validates the board's header at connect and will
+  report the drift, but it will not fix it.
+- **Python stays 3.9-compatible** even though the checked-in `.venv` is newer — hence
+  `class X(object)`, `%` formatting, no walrus/match.
+- Prose comments explain *why*, at paragraph length where the reason is non-obvious. Match
+  that register rather than adding restating one-liners.
+- `logs/`, `runs/` and all `*.csv` are gitignored run artifacts; never commit captures.
+- Board/rate facts worth not re-deriving: the BHI260AP caps motion sensors near 200 Hz,
+  the magnetometer at 50 Hz, BSEC at ~1 Hz — slow columns are *held*, not resampled. The
+  board is deliberately pinned at 200 Hz so the decimator always has full-rate history;
+  the dashboard intentionally exposes no rate or baud control.
