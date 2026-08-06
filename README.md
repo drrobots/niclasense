@@ -9,7 +9,7 @@ Verified working end to end on this machine: exactly 200.000 Hz, zero dropped sa
 ```
 nicla_stream/nicla_stream.ino   firmware
 nicla_bench/nicla_bench.ino     throughput benchmark firmware
-python/                         logger + live dashboard
+python/                         logger, live dashboard, log viewer
 python/bench/                   benchmark harness
 .venv/                          project virtualenv
 ```
@@ -48,6 +48,9 @@ you get `Resource busy`.
 
 # What ports exist?
 ../.venv/bin/python main.py --list-ports
+
+# Look at what you just captured
+../.venv/bin/python view.py
 ```
 
 | Flag | Default | Meaning |
@@ -173,6 +176,48 @@ thread (macOS requires matplotlib to own the main thread).
 
 [dash]: https://github.com/arduino/ArduinoAI/tree/main/NiclaSenseME-dashboard
 
+## Viewing a log
+
+`view.py` opens a finished CSV in the same tiles, the same palette, and the same 12-column
+grid as the live dashboard, so a recording reads like the stream it came from. What changes
+is the time axis: a fixed span you scrub and zoom instead of a window sliding under the
+newest sample.
+
+```bash
+# Newest file under logs/
+../.venv/bin/python view.py
+
+# A specific file, or the newest in a directory
+../.venv/bin/python view.py ../logs/nicla_20260805_231541.csv
+../.venv/bin/python view.py runs/
+
+# Drive the scrub strip off the gyro instead of accelerometer magnitude
+../.venv/bin/python view.py --overview gz_dps
+```
+
+- **Overview strip** (bottom) — the whole file at a glance, accelerometer magnitude by
+  default. Drag to select a range; every tile redraws to it. Burst regions are shaded,
+  since they are where the logger decided something was happening and therefore the
+  obvious places to zoom into.
+- **Cursor** — move the mouse across any tile. The values beside each title are the row
+  under the cursor, not the last row of the file, and the header shows both the offset
+  into the file and the wall-clock time there.
+- **Keys** — arrows pan, `+`/`-` zoom, `r` resets to the whole file.
+- **File tile** — duration, mean rate, row count, burst count, capture start, and the
+  range currently in view, in the slot the live dashboard uses for capture status.
+
+Traces are min/max decimated rather than strided: each drawn bucket keeps its extremes, so
+a 20 ms impact in a 10-minute file still shows up as a spike. A plain stride at that ratio
+deletes it almost every time. Single-value tiles print the min and max over the visible
+range under the trace, because the cursor readout is one instant and the spread is usually
+the story when zoomed out.
+
+Two things the loader handles quietly: a torn last row (from a capture killed mid-write)
+is skipped with a note rather than failing the file, and a board reset mid-capture — which
+restarts `t_ms` at zero and would otherwise fold the rest of the file onto the beginning —
+is stitched into one monotonic timeline, also with a note. The seam is one sample interval
+wide; the log does not record how long the board was away.
+
 ## Throughput: why 200 Hz, and why 1 Mbaud
 
 `Serial` on this board is a **real UART**, not USB CDC — the `NICLA` variant leaves
@@ -292,6 +337,7 @@ bursts cannot exceed whatever the board is streaming.
 | `python/sources.py` | `SerialSource`, threaded into a queue |
 | `python/logger.py` | CSV appender, header written only for new files |
 | `python/plot.py` | Live tiled dashboard |
+| `python/view.py` | Offline viewer for logged CSVs |
 | `python/main.py` | CLI entry point |
 
 ## Environment
