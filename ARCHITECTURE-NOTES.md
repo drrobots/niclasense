@@ -1,17 +1,17 @@
 # Architecture notes
 
 Findings from a read-through of the host side, written up while building `python/testing/`.
-Nothing here is a plan and nothing here has been fixed; it is a record of the places where
-the design does not hold together as well as the rest of it does, with the evidence that
-made each one visible. Measurements were taken on the checked-in `.venv` (CPython 3.14) on
+It is a record of the places where the design does not hold together as well as the rest of
+it does, with the evidence that made each one visible. Measurements were taken on the checked-in `.venv` (CPython 3.14) on
 an Apple Silicon machine, and the commands that produced them are given so they can be
 disagreed with.
 
-The item marked **recorded** has an `@unittest.expectedFailure` case in the suite.
-That is deliberate: a gap that is described in prose rots, and a gap that is left as a
-failing test makes the suite red for something nobody has decided to fix yet. An expected
-failure does neither — it sits quietly, and the day someone fixes it the runner reports an
-unexpected success and points at this file.
+Items are being worked through and headed **fixed** as they close; the finding and its
+evidence stay, because the reasoning is the part worth keeping. Nothing is currently
+marked `@unittest.expectedFailure` in the suite, but that remains the convention for a gap
+nobody has decided to fix: prose in this file rots, a failing test makes the suite red for
+something deliberate, and an expected failure does neither — it sits quietly, and the day
+someone fixes it the runner reports an unexpected success and points here.
 
 Reviewed again after the desktop dashboard was removed; the first section records what
 that closed.
@@ -61,40 +61,56 @@ so that the seam needed no matplotlib. Both remaining consumers poll `source.err
 their own loop. A test now asserts that importing either `pipeline` or `tiles` pulls in no
 renderer at all, which is what that care was protecting.
 
-## 1. Start-up failures are handled in two different ways
+## 1. Start-up failures are handled in two different ways — fixed
 
-`main.py` is careful with most of them: no board, an unparseable `--listen`, a port
-already taken, a malformed `--burst-on` each print one line and return 1. `CsvLogger.open()`
-is called outside all of that, so a path that cannot be written comes out as a traceback:
+`main.py` was careful with most of them: no board, an unparseable `--listen`, a port
+already taken, a malformed `--burst-on` each printed one line and returned 1.
+`CsvLogger.open()` was called outside all of that, so a path that could not be written came
+out as a traceback:
 
 ```
 UNCAUGHT OSError: [Errno 30] Read-only file system: '/nope'
 ```
 
-with the source already opened and no exit code worth acting on. Of the set, this is the
+with the source already opened and no exit code worth acting on. Of the set, this was the
 one most likely to happen unattended — a full disk, a mount that went away, a typo in a
 config file read by cron.
 
-**recorded** — `testing/test_capture.py`, `test_a_csv_that_cannot_be_opened_is_an_error_not_a_traceback`
+The reason the gap was easy to leave open was the shape around it: the three failure paths
+that *were* handled each repeated `source.stop()` and `log.close()` by hand before
+returning 1, so wrapping a fourth acquisition meant writing a fourth copy of the cleanup.
+That is what was fixed, rather than the instance. `main()` now acquires everything inside a
+`contextlib.ExitStack`, and the CSV goes on it like the rest; the three hand-written
+cleanups are one `stack.close()`, called at the top of the exit summary so the summary
+still describes a capture that has stopped. Two orderings are load-bearing and are
+commented as such: release is registration order reversed, and the dashboard child only
+notices the capture has ended once the hub closes, so its wait is registered *before* the
+hub's shutdown in order to run *after* it.
 
-Related, and the reason the gap is easy to leave open: the three failure paths that *are*
-handled each repeat `source.stop()` and `log.close()` by hand before returning 1. A fourth
-would mean a fourth copy. An `ExitStack` around the resources would remove the class of
-mistake rather than this instance of it.
+The `@unittest.expectedFailure` that recorded this is now a plain passing test, and with it
+the suite has no expected failures left.
 
-## 2. The autoscale rule lives in two languages
+## 2. The autoscale rule lives in two languages — narrowed as far as it goes
 
 Pulling the declarations out into `tiles.py` worked, and the suite checks that both
 renderers can trust them. But the rule that *consumes* those declarations — min/max over
-the undecimated window, widen about the midpoint to `min_span`, then pad 12% — is
-implemented twice: `view.py:_draw_traces` and `app.js`. They are held in step by a comment
-in each saying the order matters.
+the undecimated window, widen about the midpoint to `min_span`, then pad 12% — was
+implemented twice: `view.py:_draw_traces` and `app.js`, held in step by nothing but a
+comment in each saying the order matters.
 
-It was three before the desktop dashboard went, so this is better than it was, and it is
-as good as it gets cheaply: one of the two is JavaScript, so the honest options are to
-accept the duplication and test it, or to move the rule to the server and have the browser
-ask for limits it could compute itself. Worth stating plainly so the next person does not
-assume `tiles.py` already solved this.
+One of the two is JavaScript, so the loop itself cannot be shared, and the alternative —
+computing limits on the server and shipping them — has the browser asking for numbers it
+already has the data to work out, and going stale between batches. So the duplication
+stays, but the *numbers* no longer can drift. `tiles.autoscale()` is the rule in Python and
+`view.py` calls it; `AUTOSCALE_PAD` sits beside `min_span` in `tiles.py` and `webhub.py`
+serves it, so `app.js` reads the pad out of `/spec` instead of restating `0.12`.
+`testing/test_tiles.py` pins the arithmetic — including that widening happens before
+padding — asserts the pad reaches `/spec`, and greps the client for a re-introduced
+literal.
+
+What is left duplicated is the shape of the loop, in two languages, which is the honest
+floor for this. It is worth knowing that `tiles.py` does not solve it by itself: a change
+to the *order* still has to be made twice.
 
 ## 3. Attached-viewer counts only decay when data flows
 

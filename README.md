@@ -518,11 +518,13 @@ What the suite is for, module by module:
 | `test_config.py` | Precedence, unknown-key suggestions, and the two argparse edges documented above. Uses `main.build_parser()`, so a new flag is covered the day it is added |
 | `test_capture.py` | A whole capture end to end through `replay.py`, with a viewer attached over TCP, checking the CSV and the socket against the recording that went in |
 
-One case is marked `@unittest.expectedFailure`, recording a known gap rather than
-describing it: `test_capture.py` on an unwritable `--csv` path coming out as a traceback
-rather than as the one-line error every other start-up failure gets. Fix it and the suite
-reports an unexpected success. (There were three; the other two recorded the desktop
-dashboard's missing board-reset handling, and went with it.)
+Nothing is marked `@unittest.expectedFailure` any more. Three cases were, each recording a
+known gap rather than describing it, and all three are closed: two went with the desktop
+dashboard whose missing board-reset handling they recorded, and the third — an unwritable
+`--csv` path coming out as a traceback rather than the one-line error every other start-up
+failure gets — is now an ordinary passing test. The convention stands for the next gap
+somebody decides not to fix yet: an expected failure sits quietly and reports an
+*unexpected success* the day it is fixed, which prose in a notes file cannot do.
 
 `SerialSource` is the one part not covered — auto-detect, the auto-baud sweep, the `s<N>`
 handshake, the byte-paced command writer. That is the board, and standing in for the board

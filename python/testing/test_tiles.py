@@ -129,6 +129,57 @@ class Bounds(unittest.TestCase):
         self.assertGreater(tiles.MAX_POINTS, 0)
 
 
+class Autoscale(unittest.TestCase):
+    """The rule both renderers apply, and the number neither may restate.
+
+    view.py calls tiles.autoscale directly; app.js cannot, being JavaScript, so it takes
+    AUTOSCALE_PAD out of /spec instead. What is checked here is that the pad is served at
+    all and that no copy of the literal has crept back into the client, because a drifted
+    pad is invisible until someone frames the same capture twice and notices the tiles do
+    not agree.
+    """
+
+    def test_a_quiet_tile_is_widened_to_its_floor(self):
+        low, high = tiles.autoscale(0.0, 0.001, 2.0)
+        # min_span about the midpoint, then padded -- so the span is min_span plus both
+        # pads, and it is centred where the data was rather than on zero.
+        self.assertAlmostEqual((low + high) / 2.0, 0.0005)
+        self.assertAlmostEqual(high - low, 2.0 * (1.0 + 2 * tiles.AUTOSCALE_PAD))
+
+    def test_a_busy_tile_is_only_padded(self):
+        low, high = tiles.autoscale(-10.0, 10.0, 2.0)
+        self.assertAlmostEqual(low, -10.0 - 20.0 * tiles.AUTOSCALE_PAD)
+        self.assertAlmostEqual(high, 10.0 + 20.0 * tiles.AUTOSCALE_PAD)
+
+    def test_widening_happens_before_padding(self):
+        """The order that makes the floor mean what it says.
+
+        Padding first and widening after would give a tile at the floor a span of exactly
+        min_span; the documented order pads the widened range, so it is larger.
+        """
+        low, high = tiles.autoscale(0.0, 0.0, 4.0)
+        self.assertGreater(high - low, 4.0)
+
+    def test_the_pad_is_served_to_the_client(self):
+        import webhub
+
+        spec = webhub.build_spec(sample_hz=200.0, source="test")
+        self.assertEqual(spec["autoscale_pad"], tiles.AUTOSCALE_PAD)
+
+    def test_the_client_does_not_restate_the_pad(self):
+        import os
+        import re
+
+        path = os.path.join(support.PYTHON_DIR, "web", "app.js")
+        with open(path) as handle:
+            source = handle.read()
+        self.assertIn("spec.autoscale_pad", source)
+        # The literal in a comment is fine; in code it is the drift this guards against.
+        code = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
+        code = re.sub(r"(?m)^\s*//.*$", "", code)
+        self.assertNotIn("%g" % tiles.AUTOSCALE_PAD, code)
+
+
 class NoRenderingDependency(unittest.TestCase):
     """Declaration only: no matplotlib, no browser, no drawing of any kind.
 

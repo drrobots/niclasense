@@ -1,6 +1,8 @@
 """What the dashboards draw: the palette, the widgets, and where they sit.
 
-Declaration only -- no matplotlib, no browser, no rendering of any kind. Two programs read
+Declaration only -- no matplotlib, no browser, no rendering of any kind. The one function
+here, `autoscale`, is arithmetic on the declarations rather than drawing, and is here for
+the same reason the constants are: both renderers have to agree on it. Two programs read
 this and draw it two different ways: the browser dashboard into a grid of uPlot charts, and
 view.py into a matplotlib figure over a finished file. Adding a tile here makes it appear in
 both.
@@ -184,6 +186,33 @@ MAX_POINTS = 900
 # back it (see _resize_capacity) starts costing real memory for little benefit.
 MIN_WINDOW_S = 2.0
 MAX_WINDOW_S = 600.0
+
+# Headroom left above and below the data once a tile has been scaled, as a fraction of the
+# range. Enough that a trace touching its limit does not sit on the tile border.
+#
+# It lives here, and webhub.py serves it, because the autoscale rule is applied twice: by
+# view.py over a finished file and by web/app.js over a live window. One of the two is
+# JavaScript, so the loop cannot be shared -- but the numbers can, and a pad that drifted
+# between the two would show up as the same capture framed differently in the viewer and
+# the dashboard, which is a maddening thing to chase. `autoscale` below is the Python half;
+# app.js reads this figure out of /spec rather than restating it.
+AUTOSCALE_PAD = 0.12
+
+
+def autoscale(low, high, min_span):
+    """The y-limits for a tile whose data spans low..high. Order matters.
+
+    Take min/max over the *undecimated* window (the caller's job -- scaling strided data
+    makes a tile's range jitter as samples move in and out of the stride), widen about the
+    midpoint to `min_span`, and only then pad. Padding before widening changes the floor a
+    quiet sensor sits at, which defeats the point of `min_span`.
+    """
+    if high - low < min_span:
+        middle = (high + low) / 2.0
+        low = middle - min_span / 2.0
+        high = middle + min_span / 2.0
+    span = high - low
+    return low - span * AUTOSCALE_PAD, high + span * AUTOSCALE_PAD
 
 # The palette above is the dark one, and it is the canonical one -- it is what the two
 # matplotlib programs draw and what `series` colours in TILES actually contain. The

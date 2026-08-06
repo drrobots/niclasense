@@ -3,9 +3,11 @@
  * Reads /spec for the tile layout (so tiles.py stays the only place it is declared),
  * subscribes to /stream for samples, and draws one uPlot chart per tile.
  *
- * The autoscale rule is shared with view.py's _draw_traces, and the order of its
- * three steps matters: take min/max over the *undecimated* window, widen to min_span, then
- * pad 12%. Scaling the strided data instead makes a tile's range jitter as samples move in
+ * The autoscale rule is shared with view.py's _draw_traces -- tiles.autoscale is the Python
+ * half of it, and both min_span and the pad arrive here in /spec rather than being restated
+ * -- and the order of its three steps matters: take min/max over the *undecimated* window,
+ * widen to min_span, then pad. Scaling the strided data instead makes a tile's range jitter
+ * as samples move in
  * and out of the stride, and padding before widening changes the floor a quiet sensor sits
  * at. Either mistake shows up as tiles that breathe differently from the offline viewer,
  * which is a miserable thing to chase.
@@ -511,7 +513,10 @@
           high = middle + tile.spec.min_span / 2;
         }
         var span = high - low;
-        tile.ylim = [low - span * 0.12, high + span * 0.12];
+        /* The pad comes from /spec, not from here: view.py applies this same rule to a
+           finished file, and the two framing the same capture differently because one of
+           them was edited is exactly the drift worth designing out. */
+        tile.ylim = [low - span * spec.autoscale_pad, high + span * spec.autoscale_pad];
       }
 
       tile.chart.setData(data);

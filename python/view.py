@@ -50,6 +50,7 @@ from tiles import (
     TILE_BG,
     TILE_EDGE,
     TILES,
+    autoscale,
 )
 
 # Points drawn per trace. Two per bucket of the min/max reduction below, so the envelope
@@ -539,14 +540,11 @@ class LogView(object):
                     )
 
             if low is not None:
-                # Same floor as the live dashboard: without it a quiet stretch autoscales
-                # to its own quantization steps and sensor noise reads as real signal.
-                if high - low < tile["min_span"]:
-                    middle = (high + low) / 2.0
-                    low = middle - tile["min_span"] / 2.0
-                    high = middle + tile["min_span"] / 2.0
-                span = high - low
-                axes.set_ylim(low - span * 0.12, high + span * 0.12)
+                # Same rule as the live dashboard, from the same place: the floor keeps a
+                # quiet stretch from autoscaling to its own quantization steps and reading
+                # as real signal. low/high above came from the undecimated data, which is
+                # the half of the rule tiles.autoscale cannot enforce for us.
+                axes.set_ylim(*autoscale(low, high, tile["min_span"]))
             axes.set_xlim(t0, t1)
 
         self._selector.extents = self.view

@@ -29,6 +29,7 @@ Examples:
 """
 
 import argparse
+import contextlib
 import datetime
 import os
 import subprocess
@@ -180,6 +181,27 @@ def launch_viewer(endpoint, http_port):
         return None
 
 
+def shutdown_viewer(viewer):
+    """Wait out the dashboard child, if there is one. Takes a list, empty or of one.
+
+    A list because this is registered on the cleanup stack before the process exists:
+    release runs in reverse registration order, and the dashboard only notices the
+    capture has ended when the hub it is attached to closes, so the hub's shutdown has
+    to have been registered later than this one.
+
+    The wait itself is the courtesy. The hub is already shut by the time we get here, so
+    the dashboard's own source has died and it is shutting down of its own accord --
+    telling its open tabs the capture ended on the way out. Give it that moment before
+    insisting, so the usual case exits without a signal and the page says what happened.
+    """
+    for process in viewer:
+        try:
+            process.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            process.terminate()
+    del viewer[:]
+
+
 def run_headless(source, drain, duration, hub=None, status=None):
     start = time.time()
     last_report = start
@@ -239,117 +261,134 @@ def main(argv=None):
         print("error: %s" % exc, file=sys.stderr)
         return 1
 
-    decimator = None
-    if args.log_rate:
-        try:
-            decimator = AdaptiveDecimator(
-                rate=args.log_rate,
-                triggers=args.burst_on,
-                hold=args.burst_hold,
-                pre_roll=args.burst_pre,
-                tau=args.burst_tau,
-                burst_rate=args.rate or 200.0,
+    # Everything acquired past this point is released by the stack, on every way out of
+    # the block: the start-up failures below, Ctrl-C, and the ordinary end of a capture
+    # alike. It used to be that each `return 1` carried its own hand-written copy of the
+    # cleanup, and the acquisition that had no copy -- the CSV -- was for that reason
+    # never wrapped at all, so an unwritable path came out as a traceback with the board
+    # already open. Registration order is release order reversed; where that matters it
+    # is said so below.
+    with contextlib.ExitStack() as stack:
+        stack.callback(source.stop)
+
+        decimator = None
+        if args.log_rate:
+            try:
+                decimator = AdaptiveDecimator(
+                    rate=args.log_rate,
+                    triggers=args.burst_on,
+                    hold=args.burst_hold,
+                    pre_roll=args.burst_pre,
+                    tau=args.burst_tau,
+                    burst_rate=args.rate or 200.0,
+                )
+            except ValueError as exc:
+                print("error: %s" % exc, file=sys.stderr)
+                return 1
+
+        csv_path = args.csv if args.csv is not None else default_csv_path()
+        log = None
+        if csv_path.lower() != "none":
+            # Flush about once a second either way; the default of every 200 rows is 40 s
+            # apart at 5 Hz, which makes a tail -f look stalled.
+            flush_every = max(1, int(args.log_rate)) if decimator else 200
+            log = CsvLogger(
+                csv_path, flush_every=flush_every, mark_bursts=decimator is not None
             )
-        except ValueError as exc:
-            print("error: %s" % exc, file=sys.stderr)
+            try:
+                stack.enter_context(log)
+            except (OSError, IOError) as exc:
+                # A full disk, a mount that went away, a typo in a config file read by
+                # cron: the start-up failure most likely to happen with nobody watching,
+                # so it gets the same one line and exit code as the rest of them.
+                print("error: %s" % exc, file=sys.stderr)
+                return 1
+            print("logging to %s" % csv_path)
+            if decimator is not None:
+                print(
+                    "steady rate %g Hz, bursting to full rate for %.2gs after a trigger "
+                    "on %s"
+                    % (
+                        decimator.rate,
+                        decimator.hold,
+                        ", ".join(
+                            "%s>%g" % (name, thr) for _i, name, thr in decimator.triggers
+                        ),
+                    )
+                )
+        print("reading from %s" % source.describe())
+
+        source.start()
+
+        # Routed through SerialControl rather than the source so the link-budget clamp
+        # that protects the GUI buttons protects the flag too.
+        if args.rate and isinstance(source, SerialSource):
+            print(SerialControl(source).set_rate(args.rate))
+            if decimator is not None and args.rate < decimator.rate:
+                print(
+                    "warning: the board is streaming at %d Hz, so bursts cannot exceed "
+                    "that" % args.rate,
+                    file=sys.stderr,
+                )
+
+        try:
+            host, port = parse_endpoint(args.listen)
+        except ValueError:
+            print("error: --listen %r is not a HOST:PORT" % args.listen, file=sys.stderr)
             return 1
 
-    csv_path = args.csv if args.csv is not None else default_csv_path()
-    log = None
-    if csv_path.lower() != "none":
-        # Flush about once a second either way; the default of every 200 rows is 40 s
-        # apart at 5 Hz, which makes a tail -f look stalled.
-        flush_every = max(1, int(args.log_rate)) if decimator else 200
-        log = CsvLogger(
-            csv_path, flush_every=flush_every, mark_bursts=decimator is not None
-        ).open()
-        print("logging to %s" % csv_path)
-        if decimator is not None:
-            print(
-                "steady rate %g Hz, bursting to full rate for %.2gs after a trigger on %s"
-                % (
-                    decimator.rate,
-                    decimator.hold,
-                    ", ".join(
-                        "%s>%g" % (name, thr) for _i, name, thr in decimator.triggers
-                    ),
-                )
-            )
-    print("reading from %s" % source.describe())
+        # Registered before the viewer exists, and before the hub, because release runs
+        # in reverse: the dashboard only shuts down of its own accord once the hub it is
+        # attached to has gone, so hub.stop() has to happen first.
+        viewer = []
+        stack.callback(shutdown_viewer, viewer)
 
-    source.start()
+        # describe() rather than a captured string: a viewer attaching after a rate change
+        # should be told what the board is doing now.
+        hub = SampleHub(host=host, port=port, banner=source.describe)
+        try:
+            hub.start()
+        except OSError as exc:
+            print("error: %s" % exc, file=sys.stderr)
+            return 1
+        stack.callback(hub.stop)
+        print("serving samples on %s -- watch it with: python webdash.py %s"
+              % (hub.describe(), hub.describe()))
 
-    # Routed through SerialControl rather than the source so the link-budget clamp that
-    # protects the GUI buttons protects the flag too.
-    if args.rate and isinstance(source, SerialSource):
-        print(SerialControl(source).set_rate(args.rate))
-        if decimator is not None and args.rate < decimator.rate:
-            print(
-                "warning: the board is streaming at %d Hz, so bursts cannot exceed that"
-                % args.rate,
-                file=sys.stderr,
-            )
+        def status():
+            return capture_status(source, log, decimator, csv_path, hub)
 
-    try:
-        host, port = parse_endpoint(args.listen)
-    except ValueError:
-        print("error: --listen %r is not a HOST:PORT" % args.listen, file=sys.stderr)
-        source.stop()
-        if log is not None:
-            log.close()
-        return 1
-    # describe() rather than a captured string: a viewer attaching after a rate change
-    # should be told what the board is doing now.
-    hub = SampleHub(host=host, port=port, banner=source.describe)
-    try:
-        hub.start()
-    except OSError as exc:
-        print("error: %s" % exc, file=sys.stderr)
-        source.stop()
-        if log is not None:
-            log.close()
-        return 1
-    print("serving samples on %s -- watch it with: python webdash.py %s"
-          % (hub.describe(), hub.describe()))
+        drain = make_drain(source, [
+            make_log_sink(log, decimator) if log is not None else None,
+            hub.broadcast,
+        ])
 
-    def status():
-        return capture_status(source, log, decimator, csv_path, hub)
+        if args.plot:
+            process = launch_viewer(hub.describe(), args.http_port)
+            if process is not None:
+                viewer.append(process)
 
-    drain = make_drain(source, [
-        make_log_sink(log, decimator) if log is not None else None,
-        hub.broadcast,
-    ])
+        try:
+            run_headless(source, drain, args.duration, hub, status)
+        finally:
+            rows = log.rows_written if log is not None else 0
+            # Closed here rather than left to the end of the block, so the summary
+            # describes a capture that has actually stopped. close() pops what it runs,
+            # so leaving the block afterwards releases nothing a second time.
+            stack.close()
+            if log is not None:
+                print("wrote %d rows to %s" % (rows, csv_path))
+            if decimator is not None and log is not None:
+                print(decimator.summary())
+            if getattr(source, "malformed", 0):
+                print("skipped %d malformed lines" % source.malformed)
+            if source.dropped:
+                print("dropped %d samples (consumer fell behind)" % source.dropped)
+            if hub.client_drops:
+                print("dropped %d samples to viewers that fell behind" % hub.client_drops)
+            if source.error is not None:
+                print("source error: %s" % source.error, file=sys.stderr)
 
-    viewer = launch_viewer(hub.describe(), args.http_port) if args.plot else None
-
-    try:
-        run_headless(source, drain, args.duration, hub, status)
-    finally:
-        source.stop()
-        hub.stop()
-        if viewer is not None:
-            # The hub is already shut, so the dashboard's own source has died and it is
-            # shutting down of its own accord -- telling its open tabs the capture ended
-            # on the way out. Give it that moment before insisting, so the usual case
-            # exits without a signal and the page says what happened.
-            try:
-                viewer.wait(timeout=2.0)
-            except subprocess.TimeoutExpired:
-                viewer.terminate()
-        rows = log.rows_written if log is not None else 0
-        if log is not None:
-            log.close()
-            print("wrote %d rows to %s" % (rows, csv_path))
-        if decimator is not None and log is not None:
-            print(decimator.summary())
-        if getattr(source, "malformed", 0):
-            print("skipped %d malformed lines" % source.malformed)
-        if source.dropped:
-            print("dropped %d samples (consumer fell behind)" % source.dropped)
-        if hub.client_drops:
-            print("dropped %d samples to viewers that fell behind" % hub.client_drops)
-        if source.error is not None:
-            print("source error: %s" % source.error, file=sys.stderr)
     # Outside the finally: a return there would swallow an in-flight exception.
     if source.error is not None:
         return 1

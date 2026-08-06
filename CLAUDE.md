@@ -99,10 +99,10 @@ no entry point, which is what keeps `main.py` and `webdash.py` independent of ea
   (typed sample builders, a free port, `wait_for`) and one `test_*.py` per module. Stdlib
   `unittest` only; nothing to install. `test_schema.py` parses `nicla_stream.ino` and
   enforces the two-sided schema rule statically, and `test_capture.py` runs `main.py`
-  end to end against a recording with a real viewer attached, `--plot` included. One case
-  is marked `@unittest.expectedFailure`, recording a known gap: an unwritable `--csv` path
-  escaping as a traceback. Fixing it turns it into an unexpected success rather than
-  leaving it silently covered.
+  end to end against a recording with a real viewer attached, `--plot` included. Nothing
+  is marked `@unittest.expectedFailure` at present, but that is the convention for
+  recording a gap nobody has decided to fix: it stays quiet, and turns into an unexpected
+  success the day it is closed.
 
 Firmware: `nicla_stream.ino` formats a whole line into a `LineBuffer` and issues one
 `write()`, because the core's `Serial` is an mbed `UnbufferedSerial` that busy-waits per

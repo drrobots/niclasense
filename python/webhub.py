@@ -97,6 +97,10 @@ def build_spec(sample_hz=200.0, source=""):
             for key, (note, colour) in tiles.BSEC_ACCURACY_NOTES.items()
         },
         "max_points": tiles.MAX_POINTS,
+        # The one number of the autoscale rule that is not per-tile. app.js applies the
+        # same three steps view.py does and cannot share the loop, being JavaScript, but
+        # it takes the pad from here rather than restating it.
+        "autoscale_pad": tiles.AUTOSCALE_PAD,
         "min_window_s": tiles.MIN_WINDOW_S,
         "max_window_s": tiles.MAX_WINDOW_S,
         "sample_hz": sample_hz,

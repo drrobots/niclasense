@@ -346,16 +346,15 @@ class Failures(CaptureFixture):
         ])
         self.assertEqual(code, 1)
 
-    @unittest.expectedFailure
     def test_a_csv_that_cannot_be_opened_is_an_error_not_a_traceback(self):
-        """A known gap, recorded rather than described.
+        """This was the one start-up failure that behaved differently from the rest.
 
-        Every other start-up failure in main.py -- no board, a bad --listen, a taken port,
-        a bad trigger -- prints one line and returns 1. CsvLogger.open() is called outside
-        any of that handling, so an unwritable path (a read-only directory, a typo'd mount,
-        a full disk) comes out as a traceback instead, with the source already opened and
-        no exit code worth acting on. It is the most likely of the lot to happen to a
-        long-running capture started from cron.
+        Every other one -- no board, a bad --listen, a taken port, a bad trigger -- prints
+        one line and returns 1. CsvLogger.open() was called outside all of that handling,
+        so an unwritable path (a read-only directory, a typo'd mount, a full disk) came out
+        as a traceback instead, with the source already opened and no exit code worth
+        acting on. It is the most likely of the lot to happen to a long-running capture
+        started from cron, which is why it was worth closing rather than describing.
         """
         recording = self.recording(support.ramp(200, hz=200.0))
         main.create_source = lambda _args: replay.ReplaySource(recording)
