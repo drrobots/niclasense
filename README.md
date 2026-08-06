@@ -64,6 +64,8 @@ you get `Resource busy`.
 | `--fps` | `20` | Plot refresh rate |
 | `--no-plot` | off | Log without opening a window |
 | `--duration` | `0` | Stop after N seconds (headless only; 0 = until Ctrl-C) |
+| `--listen` | off | Serve the live stream to attachable plots, default `127.0.0.1:8765` |
+| `--attach` | off | Plot a logger already running with `--listen` instead of the board |
 
 ```
 # 5 Hz baseline, full 200 Hz for a second either side of any real motion
@@ -172,9 +174,53 @@ resting board looks flat while real motion still fills the tile. Traces are stri
 
 Ingest runs at the full 200 Hz regardless of the redraw rate, so plotting never throttles
 logging — the reader thread fills a queue that the animation callback drains on the main
-thread (macOS requires matplotlib to own the main thread).
+thread (macOS requires matplotlib to own the main thread). That is also why closing the
+window ends an all-in-one run: matplotlib owns the loop that drives the CSV. Run the
+capture with `--listen` when you want the two to have separate lifetimes.
 
 [dash]: https://github.com/arduino/ArduinoAI/tree/main/NiclaSenseME-dashboard
+
+## Headless logger, plot on demand
+
+Run all-in-one and the plot owns the process: matplotlib holds the main thread, the
+animation callback is what drains the queue into the CSV, and closing the window ends the
+capture. That is fine for a ten-minute recording and wrong for an overnight one, where you
+want to glance at the stream and walk away without taking the log down with you.
+
+`--listen` splits them. The logger keeps the serial port, the decimator and the CSV, and
+publishes every sample on a TCP socket; `--attach` is the same dashboard reading that
+socket instead of the board. Attach and detach as often as you like — the capture never
+sees it.
+
+```bash
+# Terminal 1: the capture. Runs until Ctrl-C.
+../.venv/bin/python main.py --no-plot --listen --log-rate 5
+
+# Terminal 2: look at it, close the window, come back tomorrow
+../.venv/bin/python main.py --attach
+```
+
+Points worth knowing:
+
+- **Attached plots see every sample, not the decimated file.** `--log-rate` thins what
+  lands on disk; the socket carries the full 200 Hz. So the dashboard's measured rate reads
+  200 while the capture tile reads a 5 Hz log rate, and both are correct.
+- **The socket speaks the board's own format** — a `#seq,t_ms,...` schema line, a `#`
+  banner, then one CSV row per sample, exactly as `nicla_stream.ino` prints them. So
+  `nc 127.0.0.1 8765` is a usable client, and the attaching end parses the logger with the
+  same code it uses to parse the board (`StreamSource` and `SerialSource` are
+  interchangeable; `plot.py` cannot tell which it has).
+- **A slow viewer loses its own samples, never the capture's.** Each viewer gets a bounded
+  backlog and its own writer thread; when it fills, the oldest row is dropped. A suspended
+  or wedged viewer cannot back up the serial buffer and skew log timing, which is the
+  failure this design exists to prevent. Viewer-side losses are reported separately from
+  the capture's for the same reason.
+- **The capture tile shows the logger's numbers** — its CSV path, row count, burst count
+  and live burst state — pushed over the same connection once a second.
+- `--attach` refuses `--csv`, `--log-rate`, `--port` and friends rather than ignoring them:
+  those belong to the process that owns the board.
+- It binds loopback by default. `--listen 0.0.0.0:8765` opens it to the network, which is
+  unauthenticated — only worth doing on a network you trust.
 
 ## Viewing a log
 
@@ -334,11 +380,13 @@ bursts cannot exceed whatever the board is streaming.
 | `python/bench/runbench.py` | Drives the benchmark, reports Hz and link use per encoding |
 | `python/bench/capture.py` | Raw capture: bytes/line, achieved rate, dropped samples |
 | `python/columns.py` | Single source of truth for the schema |
-| `python/sources.py` | `SerialSource`, threaded into a queue |
+| `python/sources.py` | `SerialSource` and `StreamSource`, both threaded into a queue |
 | `python/logger.py` | CSV appender, header written only for new files |
+| `python/decimator.py` | Rate limiting and burst-on-change for the CSV |
+| `python/hub.py` | Serves the live stream to attached plots (`--listen`) |
 | `python/plot.py` | Live tiled dashboard |
 | `python/view.py` | Offline viewer for logged CSVs |
-| `python/main.py` | CLI entry point |
+| `python/main.py` | CLI entry point; wires a source to its sinks |
 
 ## Environment
 

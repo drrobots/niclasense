@@ -1,13 +1,22 @@
 """Data sources for the Nicla Sense ME stream.
 
-SerialSource runs its I/O on a background thread and hands finished samples to a
-queue.Queue. That keeps the main thread free for matplotlib, which on macOS insists on
-owning it.
+A source runs its I/O on a background thread and hands finished samples to a queue.Queue.
+That keeps the main thread free for matplotlib, which on macOS insists on owning it.
+
+Two of them, interchangeable to everything downstream:
+
+    SerialSource  reads the board over USB.
+    StreamSource  reads a headless logger over TCP (see hub.py).
+
+Both speak the same line protocol -- the sketch's -- so the parsing below is shared, and
+the plot cannot tell which one it is attached to.
 
 A sample is a tuple in COLUMNS order: (seq, t_ms, ax_g, ..., bsec_acc).
 """
 
+import json
 import queue
+import socket
 import sys
 import threading
 import time
@@ -65,8 +74,30 @@ class SourceError(Exception):
     """Raised when a source cannot be opened or dies unrecoverably."""
 
 
+def check_schema(line, who, remedy):
+    """Validate a '#col,col,...' schema line against COLUMNS.
+
+    Shared by both sources: schema drift is the same failure whether the far end is a
+    board running an old sketch or a logger running old code, and it is worth saying so
+    precisely rather than letting the field-count check call every row malformed.
+    """
+    theirs = tuple(line.lstrip("#").split(","))
+    if theirs != COLUMNS:
+        raise SourceError(
+            "%s schema does not match columns.py.\n"
+            "  %s:  %s\n  expected: %s\n%s"
+            % (who, who.lower(), ",".join(theirs), ",".join(COLUMNS), remedy)
+        )
+    return theirs
+
+
 class _ThreadedSource(object):
-    """Shared plumbing: a reader thread, an output queue, and a stop flag."""
+    """Shared plumbing: a reader thread, an output queue, a stop flag, and the parser.
+
+    The line protocol lives here rather than in SerialSource because the headless logger
+    re-serves the board's own format, so a socket reader wants exactly the same parse,
+    the same field-count check, and the same banner handling.
+    """
 
     def __init__(self, max_queue=20000):
         self.queue = queue.Queue(maxsize=max_queue)
@@ -74,6 +105,13 @@ class _ThreadedSource(object):
         self._thread = None
         self.error = None
         self.dropped = 0
+        self.malformed = 0
+        self.banner = None
+        # Whatever the board last reported in its banner; None until a header arrives.
+        self.stream_hz = None
+        self.reported_baud = None
+        # Partial tail left over between reads; see _split_lines().
+        self._rx = b""
 
     def start(self):
         # Cleared rather than assumed unset, so a source can be stopped and restarted --
@@ -112,6 +150,57 @@ class _ThreadedSource(object):
     @property
     def running(self):
         return self._thread is not None and self._thread.is_alive()
+
+    # -- line protocol ---------------------------------------------------------
+
+    def _split_lines(self, chunk):
+        """Complete lines out of a chunk of bytes, holding the partial tail back."""
+        self._rx += chunk
+        if b"\n" not in self._rx:
+            if len(self._rx) > MAX_LINE_BYTES:
+                # No newline in far more than a line's worth: this is not our stream.
+                self._rx = b""
+            return []
+        parts = self._rx.split(b"\n")
+        self._rx = parts.pop()
+        return [line.decode("utf-8", "replace").strip() for line in parts]
+
+    def _consume_line(self, line):
+        """Turn one received line into a queued sample, a banner, or a malformed count."""
+        if not line:
+            return
+        if line.startswith("#"):
+            self._consume_comment(line)
+            return
+        fields = line.split(",")
+        if len(fields) != len(COLUMNS):
+            # Partial line, typically the first read after a reset.
+            self.malformed += 1
+            return
+        try:
+            sample = tuple(parse(f) for parse, f in zip(PARSERS, fields))
+        except ValueError:
+            self.malformed += 1
+            return
+        self._emit(sample)
+
+    def _consume_comment(self, line):
+        # A banner mid-stream means someone sent 'h' -- which set_rate() does on every
+        # change, so this is where a rate command is acknowledged.
+        if line.startswith("# "):
+            self._parse_banner(line[2:])
+
+    def _parse_banner(self, text):
+        """Record a '# <banner>' line and pull the board's live settings out of it."""
+        self.banner = text
+        for field in text.split():
+            name, _, value = field.partition("=")
+            if not value.isdigit():
+                continue
+            if name == "rate_hz":
+                self.stream_hz = int(value)
+            elif name == "baud":
+                self.reported_baud = int(value)
 
 
 # ---------------------------------------------------------------------------
@@ -153,14 +242,7 @@ class SerialSource(_ThreadedSource):
         self.port = port
         self.baud = baud
         self.autobaud = autobaud
-        self.banner = None
-        self.malformed = 0
-        # Whatever the board last reported in its banner; None until a header arrives.
-        self.stream_hz = None
-        self.reported_baud = None
         self._serial = None
-        # Partial tail left over between reads; see _read_lines().
-        self._rx = b""
         # Commands are written from the GUI thread while the reader thread is parked in a
         # read. The two directions are independent, but a lock costs nothing and keeps a
         # reconnect from closing the port mid-write.
@@ -276,27 +358,8 @@ class SerialSource(_ThreadedSource):
             chunk = self._serial.read(waiting if waiting else 1)
             if not chunk:
                 continue
-            self._rx += chunk
-            if b"\n" in self._rx:
-                parts = self._rx.split(b"\n")
-                self._rx = parts.pop()
-                lines.extend(parts)
-            elif len(self._rx) > MAX_LINE_BYTES:
-                # No newline in far more than a line's worth: this is not our stream.
-                self._rx = b""
-        return [line.decode("utf-8", "replace").strip() for line in lines]
-
-    def _parse_banner(self, text):
-        """Record a '# <banner>' line and pull the board's live settings out of it."""
-        self.banner = text
-        for field in text.split():
-            name, _, value = field.partition("=")
-            if not value.isdigit():
-                continue
-            if name == "rate_hz":
-                self.stream_hz = int(value)
-            elif name == "baud":
-                self.reported_baud = int(value)
+            lines.extend(self._split_lines(chunk))
+        return lines
 
     def _read_header(self, timeout=3.0):
         """Consume metadata until the column list arrives (or we give up).
@@ -318,14 +381,8 @@ class SerialSource(_ThreadedSource):
                     if line.startswith("# "):
                         self._parse_banner(line[2:])
                         continue
-                    board_columns = tuple(line.lstrip("#").split(","))
-                    if board_columns != COLUMNS:
-                        raise SourceError(
-                            "Board schema does not match columns.py.\n"
-                            "  board:  %s\n  expected: %s\n"
-                            "Reflash nicla_stream.ino, or update COLUMNS to match."
-                            % (",".join(board_columns), ",".join(COLUMNS))
-                        )
+                    check_schema(line, "Board", "Reflash nicla_stream.ino, or update "
+                                               "COLUMNS to match.")
                     return "header"
                 if len(line.split(",")) == expected:
                     # The sketch only prints its header at boot or on 'h', so a board
@@ -477,30 +534,11 @@ class SerialSource(_ThreadedSource):
         )
 
     def _run(self):
-        expected = len(COLUMNS)
         while not self._stop.is_set():
             # Bounded, so stopping stays responsive and a baud mismatch cannot wedge the
             # reader the way readline() would -- see _read_lines().
             for line in self._read_lines(0.25):
-                if not line:
-                    continue
-                if line.startswith("#"):
-                    # A banner mid-stream means someone sent 'h' -- which set_rate() does
-                    # on every change, so this is where a rate command is acknowledged.
-                    if line.startswith("# "):
-                        self._parse_banner(line[2:])
-                    continue
-                fields = line.split(",")
-                if len(fields) != expected:
-                    # Partial line, typically the first read after a reset.
-                    self.malformed += 1
-                    continue
-                try:
-                    sample = tuple(parse(f) for parse, f in zip(PARSERS, fields))
-                except ValueError:
-                    self.malformed += 1
-                    continue
-                self._emit(sample)
+                self._consume_line(line)
 
     def stop(self):
         _ThreadedSource.stop(self)
@@ -514,6 +552,138 @@ class SerialSource(_ThreadedSource):
         return "serial %s @ %d%s" % (
             self.port,
             self.baud,
+            " (%s)" % self.banner if self.banner else "",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Attached to a headless logger
+# ---------------------------------------------------------------------------
+
+
+class StreamSource(_ThreadedSource):
+    """Reads the same CSV lines from a logger listening on TCP (see hub.py).
+
+    Interchangeable with SerialSource from the outside: same queue, same counters, same
+    describe(). That is the whole point -- LivePlot cannot tell the difference, so
+    attaching a plot to a running capture needs no plotting code at all.
+
+    Note the two kinds of loss are counted separately. `dropped` is this process falling
+    behind its own socket; the logger's own drops arrive in the status dict and belong to
+    the capture, not to the viewer.
+    """
+
+    def __init__(self, host="127.0.0.1", port=8765, max_queue=20000, timeout=3.0):
+        _ThreadedSource.__init__(self, max_queue=max_queue)
+        self.host = host
+        self.port = port
+        self.timeout = timeout
+        # Last '# status {...}' the logger published: rows written, CSV path, burst state.
+        self.status = {}
+        self._socket = None
+
+    def open(self):
+        try:
+            sock = socket.create_connection((self.host, self.port), timeout=self.timeout)
+        except OSError as exc:
+            raise SourceError(
+                "Could not attach to %s:%d (%s). Start a logger there with "
+                "--listen, or pass --attach HOST:PORT." % (self.host, self.port, exc)
+            )
+        sock.settimeout(self.timeout)
+        self._socket = sock
+        self._rx = b""
+
+        # The logger leads with its schema line and then its banner, so a mismatch is
+        # caught before a single sample is parsed rather than showing up as a wall of
+        # malformed rows. Both usually arrive in one packet; the loop keeps reading until
+        # it has the banner too, so describe() is complete from the very first frame.
+        deadline = time.time() + self.timeout
+        seen_schema = False
+        while time.time() < deadline:
+            try:
+                chunk = sock.recv(4096)
+            except socket.timeout:
+                break
+            except OSError as exc:
+                self.close()
+                raise SourceError("Lost %s:%d while reading its header: %s"
+                                  % (self.host, self.port, exc))
+            if not chunk:
+                break
+            for line in self._split_lines(chunk):
+                if not line:
+                    continue
+                if line.startswith("#") and not line.startswith("# "):
+                    try:
+                        check_schema(line, "Logger",
+                                     "Both ends must run the same columns.py.")
+                    except SourceError:
+                        self.close()
+                        raise
+                    seen_schema = True
+                    continue
+                self._consume_line(line)
+            if seen_schema and self.banner is not None:
+                sock.settimeout(0.25)
+                return self
+
+        if seen_schema:
+            # Schema checked out; a logger that has not printed a banner yet is odd but
+            # not a reason to refuse to plot it.
+            sock.settimeout(0.25)
+            return self
+
+        self.close()
+        raise SourceError(
+            "%s:%d did not send a Nicla header. Is that a logger running with --listen?"
+            % (self.host, self.port)
+        )
+
+    def _consume_comment(self, line):
+        if line.startswith("# status "):
+            try:
+                self.status = json.loads(line[len("# status "):])
+            except ValueError:
+                pass
+            return
+        _ThreadedSource._consume_comment(self, line)
+
+    def _run(self):
+        while not self._stop.is_set():
+            try:
+                chunk = self._socket.recv(4096)
+            except socket.timeout:
+                # Short by design so stopping stays responsive; silence is not an error,
+                # a logger between samples looks exactly like this.
+                continue
+            except OSError as exc:
+                if self._stop.is_set():
+                    return
+                raise SourceError("Lost the logger at %s:%d: %s"
+                                  % (self.host, self.port, exc))
+            if not chunk:
+                raise SourceError("The logger at %s:%d closed the connection."
+                                  % (self.host, self.port))
+            for line in self._split_lines(chunk):
+                self._consume_line(line)
+
+    def close(self):
+        if self._socket is not None:
+            try:
+                self._socket.close()
+            except OSError:
+                pass
+            self._socket = None
+
+    def stop(self):
+        _ThreadedSource.stop(self)
+        self.close()
+
+    def describe(self):
+        return "stream %s:%d%s" % (
+            self.host,
+            self.port,
             " (%s)" % self.banner if self.banner else "",
         )
 
@@ -568,7 +738,12 @@ class SerialControl(object):
 
 
 def create_source(args):
-    """Build the source the CLI asked for."""
+    """Build the source the CLI asked for: the board, or a logger already reading it."""
+    if getattr(args, "attach", None):
+        from hub import parse_endpoint
+
+        host, port = parse_endpoint(args.attach)
+        return StreamSource(host=host, port=port)
     return SerialSource(
         port=args.port, baud=args.baud, autobaud=not args.no_autobaud
     )
