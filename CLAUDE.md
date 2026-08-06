@@ -31,6 +31,7 @@ arduino-cli compile --fqbn arduino:mbed_nicla:nicla_sense nicla_stream && arduin
 | Headless capture, no window | `../.venv/bin/python main.py --no-plot --duration 15` |
 | Capture serving attachable viewers | `../.venv/bin/python main.py --no-plot --listen` |
 | Attach a live dashboard | `../.venv/bin/python dashboard.py` |
+| Attach a browser dashboard | `../.venv/bin/python webdash.py --open` |
 | View a finished CSV | `../.venv/bin/python view.py [path-or-dir]` |
 | Which ports exist | `../.venv/bin/python main.py --list-ports` |
 | Confirm firmware holds its rate | `../.venv/bin/python bench/capture.py` |
@@ -56,10 +57,21 @@ no entry point, which is what keeps `main.py` and `dashboard.py` independent of 
 - `logger.py` / `hub.py` — CSV appender (header only for new files) and the TCP fan-out.
   The hub re-emits the board's own wire format, so `nc` is a valid client and the attaching
   end reuses the board parser.
-- `plot.py` — the live tile grid, shared by `main.py` and `dashboard.py`. `TILES` declares
-  widgets, `PLACEMENT` positions them on a 12-column grid; `view.py` imports both so the
-  offline viewer matches the live one. Keep `min_span` on new tiles or a resting board
-  autoscales its own quantization noise into dramatic-looking staircases.
+- `tiles.py` — the widget declarations. `TILES`, `PLACEMENT` on a 12-column grid, the
+  palette, `BSEC_*`, `MAX_POINTS`, the window bounds. No matplotlib and no rendering, so
+  the browser server can import it and serve it as JSON. Three programs draw it three
+  ways; adding a tile here adds it to all three. Keep `min_span` on new tiles or a resting
+  board autoscales its own quantization noise into dramatic-looking staircases.
+- `plot.py` — the live tile grid, shared by `main.py` and `dashboard.py`. Re-exports the
+  `tiles.py` constants because `view.py` has always imported them from here.
+- `webhub.py` / `webdash.py` / `web/` — the browser dashboard, attach-only like
+  `dashboard.py`. Stdlib `ThreadingHTTPServer` + Server-Sent Events on `127.0.0.1`, and a
+  client that draws with vendored uPlot. The server renders nothing; the page holds its own
+  buffers, so every tab has its own window length and theme. `/spec` serves `tiles.py`, so
+  the layout is never restated in JavaScript. `app.js` ports the autoscale from
+  `plot.py:_refresh` and the order matters — min/max over the *undecimated* window, widen
+  to `min_span`, then pad 12%; get it wrong and tiles breathe differently from the desktop
+  version. Rows go out in ~20 Hz batches, not per sample.
 - `view.py` — offline viewer. Min/max envelope decimation (not striding, which deletes
   short impacts), plus tolerant loading of torn final rows and mid-capture board resets.
 - `columns.py` — the schema, and the only place column order lives on the host.

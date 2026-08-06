@@ -18,181 +18,29 @@ from matplotlib.widgets import TextBox
 
 from columns import COLUMNS
 
-# Palette lifted from the Arduino dashboard: near-black page, slightly lifted tiles,
-# and the Arduino Pro accent yellow-green for anything that reads as "live".
-PAGE_BG = "#000000"
-TILE_BG = "#111111"
-TILE_EDGE = "#1f1f1f"
-TEXT = "#DAE3E3"
-MUTED = "#888888"
-ACCENT = "#d8f41d"
-GRID = "#242424"
-
-# Per-axis colours for the three-component sensors, so x/y/z read the same everywhere.
-XYZ = ("#d8f41d", "#50BFE6", "#FF6EFF")
-
-FONT = "DejaVu Sans Mono"
-
-# A tile is one widget. `series` are (column, label, colour); `value` is the column whose
-# latest reading is printed large next to the title (None for multi-component tiles,
-# which print all of their components small instead).
-#
-# `min_span` is the smallest y-range a tile will autoscale to. Without it, a board
-# sitting still gets scaled to its own quantization steps, which renders sensor noise as
-# dramatic staircases and reads as real signal. Each value is roughly the sensor's noise
-# floor, so a resting board looks flat and genuine motion still fills the tile.
-TILES = (
-    {
-        "name": "orientation",
-        "title": "ORIENTATION",
-        "series": (
-            ("heading_deg", "hdg", XYZ[0]),
-            ("pitch_deg", "pit", XYZ[1]),
-            ("roll_deg", "rol", XYZ[2]),
-        ),
-        "unit": "deg",
-        "fmt": "%6.1f",
-        "min_span": 30.0,
-        "quaternion": True,
-    },
-    {
-        "name": "accelerometer",
-        "title": "ACCELEROMETER",
-        "series": (("ax_g", "x", XYZ[0]), ("ay_g", "y", XYZ[1]), ("az_g", "z", XYZ[2])),
-        "unit": "g",
-        "fmt": "%6.2f",
-        "min_span": 0.5,
-    },
-    {
-        "name": "gyroscope",
-        "title": "GYROSCOPE",
-        "series": (
-            ("gx_dps", "x", XYZ[0]),
-            ("gy_dps", "y", XYZ[1]),
-            ("gz_dps", "z", XYZ[2]),
-        ),
-        "unit": "deg/s",
-        "fmt": "%7.1f",
-        "min_span": 5.0,
-    },
-    {
-        "name": "magnetometer",
-        "title": "MAGNETOMETER",
-        "series": (("mx_uT", "x", XYZ[0]), ("my_uT", "y", XYZ[1]), ("mz_uT", "z", XYZ[2])),
-        "unit": "uT",
-        "fmt": "%7.1f",
-        "min_span": 20.0,
-    },
-    {
-        "name": "gas",
-        "title": "GAS RESISTANCE",
-        "series": (("gas_ohm", "gas", "#FF9933"),),
-        "value": "gas_ohm",
-        "unit": "ohm",
-        "fmt": "%.0f",
-        "min_span": 2000.0,
-    },
-    {
-        "name": "temperature",
-        "title": "TEMPERATURE",
-        "series": (("temp_C", "temp", "#FF6037"),),
-        "value": "temp_C",
-        "unit": "degC",
-        "fmt": "%.2f",
-        "min_span": 2.0,
-    },
-    {
-        "name": "humidity",
-        "title": "HUMIDITY",
-        "series": (("hum_pct", "hum", "#50BFE6"),),
-        "value": "hum_pct",
-        "unit": "%RH",
-        "fmt": "%.1f",
-        "min_span": 2.0,
-    },
-    {
-        "name": "pressure",
-        "title": "PRESSURE",
-        "series": (("press_hPa", "press", "#AAF0D1"),),
-        "value": "press_hPa",
-        "unit": "hPa",
-        "fmt": "%.2f",
-        "min_span": 2.0,
-    },
-    {
-        "name": "iaq",
-        "title": "AIR QUALITY",
-        "series": (("iaq", "iaq", "#CCFF00"),),
-        "value": "iaq",
-        "unit": "IAQ",
-        "fmt": "%.0f",
-        "min_span": 50.0,
-    },
-    {
-        "name": "co2",
-        "title": "CO2 EQUIVALENT",
-        "series": (("co2_eq_ppm", "co2", "#66FF66"),),
-        "value": "co2_eq_ppm",
-        "unit": "ppm",
-        "fmt": "%.0f",
-        "min_span": 100.0,
-    },
-    {
-        "name": "bvoc",
-        "title": "BVOC EQUIVALENT",
-        "series": (("bvoc_eq_ppm", "bvoc", "#FF355E"),),
-        "value": "bvoc_eq_ppm",
-        "unit": "ppm",
-        "fmt": "%.2f",
-        "min_span": 1.0,
-    },
+# Re-exported rather than imported where they are used, because view.py has always got
+# these from plot.py and there is no reason to churn it. tiles.py is where they live now.
+from tiles import (  # noqa: F401 -- re-exported for view.py
+    ACCENT,
+    BSEC_ACCURACY_NOTES,
+    BSEC_TILES,
+    CAPTURE_SLOT,
+    FONT,
+    GRID,
+    MAX_POINTS,
+    MAX_WINDOW_S,
+    MIN_WINDOW_S,
+    MUTED,
+    PAGE_BG,
+    PLACEMENT,
+    TEXT,
+    TILE_BG,
+    TILE_EDGE,
+    TILES,
+    XYZ,
 )
 
-# Where each tile sits in the 12-column grid: (row, first column, column span).
-PLACEMENT = {
-    "orientation": (0, 0, 4),
-    "accelerometer": (0, 4, 4),
-    "gyroscope": (0, 8, 4),
-    "magnetometer": (1, 0, 5),
-    # (1, 5, 4) is the capture tile, in the slot the web dashboard gives the LED picker.
-    "gas": (1, 9, 3),
-    "temperature": (2, 0, 2),
-    "humidity": (2, 2, 2),
-    "pressure": (2, 4, 2),
-    "iaq": (2, 6, 2),
-    "co2": (2, 8, 2),
-    "bvoc": (2, 10, 2),
-}
-
-CAPTURE_SLOT = (1, 5, 4)
-
-# Tiles fed by BSEC, whose outputs are only real once the gas sensor has run in. Until
-# then BSEC reports accuracy 0 and emits fixed placeholders (IAQ 25, CO2 500 ppm, bVOC
-# 0.49 ppm), which look exactly like a live-but-flat trace -- so each of these tiles
-# states the calibration state next to its unit rather than letting a constant pass for a
-# reading. Run-in takes minutes of *uninterrupted* uptime and restarts on every board
-# reset, so a stuck tile usually means something rebooted the board.
-BSEC_TILES = frozenset(("iaq", "co2", "bvoc"))
-
-# BSEC accuracy word -> what to show beside the unit. 3 is fully calibrated and says
-# nothing, keeping the tile clean in the normal case.
-BSEC_ACCURACY_NOTES = {
-    0: ("warming up", "#FF9F1C"),
-    1: ("calibrating", "#CCCC33"),
-    2: ("calibrated", MUTED),
-    3: (None, MUTED),
-}
-
-# Drawing every sample of a 200 Hz stream is invisible detail at tile size and costs real
-# frame time, so traces are strided down to about this many points.
-MAX_POINTS = 900
-
 GRID_BOTTOM_PLAIN = 0.03
-
-# Below this the trace has too few points to read; above it the ring buffer needed to
-# back it (see _resize_capacity) starts costing real memory for little benefit.
-MIN_WINDOW_S = 2.0
-MAX_WINDOW_S = 600.0
 
 BUTTON_FACE = "#191919"
 BUTTON_HOVER = "#2c2c2c"

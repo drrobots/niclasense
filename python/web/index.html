@@ -1,0 +1,44 @@
+<!doctype html>
+<!--
+  The browser dashboard. Deliberately not a copy of the matplotlib window: same tiles and
+  same palette, but a CSS grid that reflows instead of a fixed raster, and a theme the
+  viewer picks rather than one baked in at render time.
+
+  Everything below the header is built by app.js from /spec, so the tile list lives only in
+  tiles.py. The markup here is the frame around it.
+-->
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nicla Sense ME</title>
+<link rel="stylesheet" href="uPlot.min.css">
+<link rel="stylesheet" href="dash.css">
+</head>
+<body>
+
+<header class="bar">
+  <div class="brand">
+    <h1>NICLA SENSE ME</h1>
+    <p id="source">connecting&hellip;</p>
+  </div>
+  <div class="controls">
+    <span id="clock" class="clock">t + 0.0 s</span>
+    <label class="control">
+      window
+      <select id="window"></select>
+    </label>
+    <button id="theme" class="control" type="button" title="Switch theme">theme</button>
+  </div>
+</header>
+
+<!-- Shown over the grid when the stream drops; the tiles stay visible behind it, frozen
+     on their last samples, because a blank page loses what you were looking at. -->
+<div id="notice" class="notice" hidden></div>
+
+<main id="grid" class="grid"></main>
+
+<script src="uPlot.iife.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -276,6 +276,61 @@ Points worth knowing:
 - It binds loopback by default. `--listen 0.0.0.0:8765` opens it to the network, which is
   unauthenticated — only worth doing on a network you trust.
 
+## Browser dashboard
+
+`webdash.py` attaches to the same `--listen` socket and serves the dashboard as a web page
+instead of a window. It is a third viewer alongside `dashboard.py` and `view.py`, not a
+replacement for either.
+
+```bash
+# Terminal 1: the capture, as above
+../.venv/bin/python main.py --no-plot --listen
+
+# Terminal 2: serve it, and open a browser at it
+../.venv/bin/python webdash.py --open
+```
+
+It draws in the browser rather than shipping pictures to it. The server parses the stream,
+batches it into [Server-Sent Events](https://developer.mozilla.org/docs/Web/API/Server-sent_events)
+and forgets about it; the page keeps its own buffers and draws the traces with
+[uPlot](https://github.com/leeoniya/uPlot), vendored into `python/web/` (51 KB, MIT). There
+is no build step and nothing to install — `webhub.py` is stdlib, and the page loads no
+third-party URL, so it works with no network beyond loopback.
+
+Consequences of drawing client-side, all of which are the reason for it:
+
+- **Every tab is independent.** Its own ring buffers, its own window length, its own theme.
+  Two people can watch one capture over different spans, and neither sees the other's
+  cursor. (The route not taken here was matplotlib's WebAgg backend, which serves one
+  shared figure as a PNG stream: one viewer's window change is everyone's, and a theme
+  cannot be a browser-side choice at all when it is baked into a raster server-side.)
+- **The server does no rendering.** It sits near 3% CPU with tabs attached, against the
+  ~95% a WebAgg-style rasteriser needs, because all it does is reformat rows.
+- **Light and dark themes**, from `prefers-color-scheme` with a toggle that overrides it and
+  persists. Colours live in `web/dash.css` as custom properties; the charts read them back
+  through `getComputedStyle` on every draw, so switching is a redraw with nothing
+  reconfigured. Four trace colours are chosen against near-black and are illegible on
+  white, so `tiles.LIGHT_OVERRIDES` substitutes darker equivalents for those and passes the
+  rest through.
+- **It reflows.** Two tiles abreast on a tablet, one on a phone, rather than the fixed
+  1500×900 the matplotlib window is.
+
+Deliberately absent: any control over the board. Window length is a client-side choice
+about how much of the buffer to draw, exactly as the matplotlib dashboard's is, and neither
+program can change the rate — see *The dashboard does not change the board's rate*.
+
+Like `--listen`, it binds loopback and there is no flag to change that. It is an
+unauthenticated live feed of whatever the board can hear.
+
+Two things worth knowing when it looks broken:
+
+- **The capture tile stays empty under `main.py --listen` *with* a plot.** Status is
+  published from the headless path only, so the browser has nothing to show. Use
+  `--no-plot --listen`, which is the intended pairing anyway.
+- **A tab opens on the last 30 seconds, not on an empty window**, because the server keeps
+  a short backlog for arrivals. Pick a 300 s window and the first five minutes fill in from
+  the live stream rather than appearing at once.
+
 ## Viewing a log
 
 `view.py` opens a finished CSV in the same tiles, the same palette, and the same 12-column
@@ -440,10 +495,14 @@ bursts cannot exceed whatever the board is streaming.
 | `python/logger.py` | CSV appender, header written only for new files |
 | `python/decimator.py` | Rate limiting and burst-on-change for the CSV |
 | `python/hub.py` | Serves the live stream to attached plots (`--listen`) |
+| `python/webhub.py` | Serves the same stream to browsers, over SSE, plus the page |
 | `python/pipeline.py` | The seam: a source's queue on one side, sample sinks on the other |
+| `python/tiles.py` | The tiles, palette and grid placement — declaration only, no drawing |
 | `python/plot.py` | The live tile grid itself, driven by whichever program owns it |
 | `python/main.py` | The capture: port, decimator, CSV, and optionally a plot |
 | `python/dashboard.py` | The live dashboard, attached to a capture running elsewhere |
+| `python/webdash.py` | The same dashboard in a browser, attached the same way |
+| `python/web/` | The browser client: page, stylesheet, drawing code, vendored uPlot |
 | `python/view.py` | Offline viewer for logged CSVs |
 
 ## Environment
