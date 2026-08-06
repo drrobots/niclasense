@@ -125,7 +125,14 @@ recent value between updates** — they are held, not resampled. Rows are ~165 b
   its own calibration state in `bsec_acc` (0 = unstable, 3 = fully calibrated) and emits
   placeholder values until it has run in. This takes minutes on first power-up and longer
   from cold. Treat air-quality readings as meaningful only once `bsec_acc` ≥ 1. It reached 1
-  within a couple of minutes during testing.
+  after about six minutes of continuous uptime during testing.
+  The run-in clock is *board uptime*, and it restarts from zero on every reset — including
+  a reflash. So a board that gets reset every few minutes never leaves `bsec_acc` 0, and the
+  three air-quality tiles hold their placeholders no matter how long you watch. The
+  dashboard labels those tiles with the calibration state so this is visible rather than
+  looking like a frozen plot; `gas_ohm` is raw and keeps moving throughout, which is the
+  quickest way to confirm the sensor itself is alive. Note that opening the serial port
+  used to reset the board on its own — see the DTR/RTS handling in `_open_at()`.
 - **`temp_C` reads a few degrees above room temperature.** The BME688 sits on a powered PCB
   and self-heats. If you need ambient air temperature, calibrate the offset, or use BSEC's
   internally compensated value.

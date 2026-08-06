@@ -201,9 +201,23 @@ class SerialSource(_ThreadedSource):
         import serial
 
         try:
+            # Constructed unopened so DTR/RTS can be deasserted before the port comes up.
+            # The Nicla's USB side is a CMSIS-DAP probe, and it turns an asserted DTR into
+            # an nRF52 reset -- so opening the port the ordinary way reboots the board.
+            # That silently wipes BSEC's calibration state, and since the gas sensor needs
+            # several minutes of continuous run-in, IAQ/CO2/bVOC sit pinned at their
+            # stabilisation defaults (25 / 500 / 0.49, bsec_acc 0) for every session short
+            # enough to be reset again first. The auto-baud sweep below makes it worse: one
+            # reset per candidate rate.
+            port = serial.Serial()
+            port.port = self.port
+            port.baudrate = baud
             # Short timeout so _read_lines() can enforce its own deadline; the reads are
             # driven by in_waiting, so this costs nothing when the stream is busy.
-            port = serial.Serial(self.port, baud, timeout=READ_TIMEOUT)
+            port.timeout = READ_TIMEOUT
+            port.dtr = False
+            port.rts = False
+            port.open()
         except serial.SerialException as exc:
             raise SourceError("Could not open %s at %d baud: %s" % (self.port, baud, exc))
 

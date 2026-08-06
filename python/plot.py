@@ -166,6 +166,23 @@ PLACEMENT = {
 
 CAPTURE_SLOT = (1, 5, 4)
 
+# Tiles fed by BSEC, whose outputs are only real once the gas sensor has run in. Until
+# then BSEC reports accuracy 0 and emits fixed placeholders (IAQ 25, CO2 500 ppm, bVOC
+# 0.49 ppm), which look exactly like a live-but-flat trace -- so each of these tiles
+# states the calibration state next to its unit rather than letting a constant pass for a
+# reading. Run-in takes minutes of *uninterrupted* uptime and restarts on every board
+# reset, so a stuck tile usually means something rebooted the board.
+BSEC_TILES = frozenset(("iaq", "co2", "bvoc"))
+
+# BSEC accuracy word -> what to show beside the unit. 3 is fully calibrated and says
+# nothing, keeping the tile clean in the normal case.
+BSEC_ACCURACY_NOTES = {
+    0: ("warming up", "#FF9F1C"),
+    1: ("calibrating", "#CCCC33"),
+    2: ("calibrated", MUTED),
+    3: (None, MUTED),
+}
+
 # Drawing every sample of a 200 Hz stream is invisible detail at tile size and costs real
 # frame time, so traces are strided down to about this many points.
 MAX_POINTS = 900
@@ -214,6 +231,8 @@ class LivePlot(object):
                 self._series[column] = deque(maxlen=capacity)
         for column in ("qx", "qy", "qz", "qw"):
             self._series[column] = deque(maxlen=capacity)
+        # Not plotted, but the three BSEC tiles are meaningless without it; see BSEC_TILES.
+        self._series["bsec_acc"] = deque(maxlen=capacity)
 
         self.figure = plt.figure(figsize=(15, 9), facecolor=PAGE_BG)
         self.figure.canvas.manager.set_window_title(
@@ -298,6 +317,16 @@ class LivePlot(object):
             fontfamily=FONT, fontsize=8.5, color=MUTED,
         )
 
+        accuracy = None
+        if tile["name"] in BSEC_TILES:
+            # Right-aligned under the tile so it reads as a footnote to the value above it
+            # and cannot collide with the unit however long the note gets.
+            accuracy = axes.text(
+                1.0, -0.02, "",
+                transform=axes.transAxes, va="top", ha="right",
+                fontfamily=FONT, fontsize=8.5, color=MUTED,
+            )
+
         for column_name, label, colour in tile["series"]:
             (line,) = axes.plot([], [], "-", linewidth=1.1, color=colour, label=label)
             self._lines[column_name] = line
@@ -312,7 +341,10 @@ class LivePlot(object):
                 fontfamily=FONT, fontsize=8.5, color=MUTED,
             )
 
-        return {"axes": axes, "tile": tile, "readout": readout, "quaternion": quaternion}
+        return {
+            "axes": axes, "tile": tile, "readout": readout,
+            "quaternion": quaternion, "accuracy": accuracy,
+        }
 
     def _make_capture(self, grid):
         row, column, span = CAPTURE_SLOT
@@ -569,6 +601,15 @@ class LivePlot(object):
                     )
                 entry["readout"].set_text(text)
                 artists.append(entry["readout"])
+
+            if entry["accuracy"] is not None:
+                accuracy = self._series["bsec_acc"]
+                note, colour = BSEC_ACCURACY_NOTES.get(
+                    int(accuracy[-1]) if accuracy else 0, (None, MUTED)
+                )
+                entry["accuracy"].set_text(note or "")
+                entry["accuracy"].set_color(colour)
+                artists.append(entry["accuracy"])
 
             if entry["quaternion"] is not None:
                 entry["quaternion"].set_text(
