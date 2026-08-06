@@ -112,7 +112,7 @@ class Fanout(HubFixture):
 
 
 class AttachedViewer(HubFixture):
-    """StreamSource against a real hub: the path dashboard.py and webdash.py take."""
+    """StreamSource against a real hub: the path webdash.py takes."""
 
     def test_samples_arrive_as_the_tuples_that_went_in(self):
         source = self.attached_source()

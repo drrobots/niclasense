@@ -9,7 +9,7 @@ Verified working end to end on this machine: exactly 200.000 Hz, zero dropped sa
 ```
 nicla_stream/nicla_stream.ino   firmware
 nicla_bench/nicla_bench.ino     throughput benchmark firmware
-python/                         logger, live dashboard, log viewer
+python/                         capture, browser dashboard, log viewer
 python/bench/                   benchmark harness
 .venv/                          project virtualenv
 ```
@@ -29,12 +29,12 @@ cd python && ../.venv/bin/python main.py --plot
 ```
 
 The port is auto-detected by USB VID/PID, the CSV lands in `python/logs/nicla_<timestamp>.csv`,
-and the plot window scrolls the last 30 seconds. Ctrl-C in the terminal stops the capture;
-closing the window only detaches the dashboard, which is a separate process.
+and a browser opens on the dashboard at `http://127.0.0.1:8988/`. Ctrl-C in the terminal
+stops the capture; closing the tab only detaches the dashboard, which is a separate process.
 
 `main.py` itself is always headless and always serves the stream on `127.0.0.1:8765`, so
-without `--plot` you get a capture you can attach to whenever you like — with
-`dashboard.py`, `webdash.py`, or `nc`. See [Capture and dashboard as separate programs](#capture-and-dashboard-as-separate-programs).
+without `--plot` you get a capture you can attach to whenever you like — with `webdash.py`
+or `nc`. See [Capture and dashboard as separate programs](#capture-and-dashboard-as-separate-programs).
 
 **The Arduino IDE's Serial Monitor holds the port exclusively.** Close it before running, or
 you get `Resource busy`.
@@ -45,8 +45,8 @@ you get `Resource busy`.
 # Capture, fixed duration, chosen file
 ../.venv/bin/python main.py --duration 60 --csv runs/walk.csv
 
-# Longer plot window, explicit port
-../.venv/bin/python main.py --plot --window 60 --port /dev/cu.usbmodemEE7B25F12
+# Dashboard on a different port, explicit serial device
+../.venv/bin/python main.py --plot --http-port 9100 --port /dev/cu.usbmodemEE7B25F12
 
 # Serve only, no logging
 ../.venv/bin/python main.py --csv none
@@ -66,9 +66,8 @@ you get `Resource busy`.
 | `--no-autobaud` | off | Fail instead of trying other rates when `--baud` yields nothing |
 | `--rate` | `0` | Ask the board to stream at N Hz on connect (0 = leave it alone) |
 | `--csv` | `logs/nicla_<ts>.csv` | Output file; `none` disables logging |
-| `--plot` | off | Also start `dashboard.py` against this capture's socket |
-| `--window` | `30` | Plot window in seconds; passed to the dashboard `--plot` starts |
-| `--fps` | `20` | Plot refresh rate; likewise |
+| `--plot` | off | Also start `webdash.py` against this capture's socket, and open a browser at it |
+| `--http-port` | `8988` | Port for the dashboard `--plot` starts. Ignored without `--plot` |
 | `--duration` | `0` | Stop after N seconds (0 = until Ctrl-C) |
 | `--listen` | `127.0.0.1:8765` | Address the live stream is served on. Serving is not optional; where is |
 
@@ -107,7 +106,7 @@ defaults; copy it and delete what you are not changing.
 ../.venv/bin/python main.py --config overnight.conf
 
 # The file describes the setup; flags vary one run of it
-../.venv/bin/python main.py --config overnight.conf --window 60 --duration 300
+../.venv/bin/python main.py --config overnight.conf --log-rate 1 --duration 300
 ```
 
 ```ini
@@ -205,7 +204,18 @@ recent value between updates** — they are held, not resampled. Rows are ~165 b
   and self-heats. If you need ambient air temperature, calibrate the offset, or use BSEC's
   internally compensated value.
 
-## Live dashboard
+## Dashboard
+
+`webdash.py` attaches to a running capture and serves the dashboard as a web page. It is
+the only live viewer; `main.py --plot` starts it for you and opens a browser at it.
+
+```bash
+# Terminal 1: the capture, as above
+../.venv/bin/python main.py
+
+# Terminal 2: serve it, and open a browser at it
+../.venv/bin/python webdash.py --open
+```
 
 A dark tile grid modelled on Arduino's own [NiclaSenseME web dashboard][dash]: one widget
 per sensor, current value beside the title, scrolling trace underneath. All tiles share the
@@ -215,99 +225,21 @@ same time window, so a bump shows up in the same horizontal place everywhere.
   accelerometer, gyroscope
 - **Row 2** — magnetometer, **capture**, gas resistance
 - **Row 3** — temperature, humidity, pressure, IAQ, CO₂-eq, bVOC-eq
-- **Capture tile** — log Hz, measured Hz, and the plot window (the one editable field)
+- **Capture tile** — log Hz, measured Hz, and the window selector
 
 The capture tile occupies the slot the web dashboard gives its RGB LED picker. Since this
 tool's job is logging rather than driving the board, it reports the log rate (lit while a
 burst is recording, and reading `all` when not decimating), the measured sample rate, the
 CSV being written, rows on disk, burst count, buffered samples, and any dropped or malformed
-samples — that last line turns orange when either is non-zero. The **window s** field
-changes how many seconds of history every tile scrolls, live — enter a value between
-2 and 600 and hit enter; the ring buffers backing the traces grow to fit if you ask for
-more history than they currently hold.
+samples — that last line turns orange when either is non-zero.
 
-Tiles are declared in `TILES` in `plot.py` and positioned by `PLACEMENT`, a 12-column grid;
-moving a widget is a one-line change.
-
-Each tile has a minimum y-span (`min_span`). This matters: without it, matplotlib autoscales
-a motionless board down to its own quantization steps, and sensor noise renders as dramatic
-staircases that read as real signal. The floors are set near each sensor's noise level, so a
-resting board looks flat while real motion still fills the tile. Traces are strided down to
-~900 points per tile, which is more resolution than a tile can show and keeps redraws cheap.
-
-Ingest runs at the full 200 Hz regardless of the redraw rate: the reader thread fills a
-queue that the animation callback drains on the main thread (macOS requires matplotlib to
-own the main thread). In a dashboard that is all it drains — the CSV is in another process
-entirely, which is the point of the next section.
-
-[dash]: https://github.com/arduino/ArduinoAI/tree/main/NiclaSenseME-dashboard
-
-## Capture and dashboard as separate programs
-
-There was once an all-in-one mode, and it had the coupling you would expect: matplotlib
-held the main thread, so the animation callback was what drained the queue into the CSV,
-and closing the window ended the capture. Fine for a ten-minute recording, wrong for an
-overnight one, where you want to glance at the stream and walk away without taking the log
-down with you.
-
-So `main.py` is always headless and always serves. It keeps the serial port, the decimator
-and the CSV, and publishes every sample on a TCP socket; `dashboard.py` is the same
-dashboard reading that socket instead of the board. Attach and detach as often as you like
-— the capture never sees it.
-
-```bash
-# Terminal 1: the capture. Runs until Ctrl-C.
-../.venv/bin/python main.py --log-rate 5
-
-# Terminal 2: look at it, close the window, come back tomorrow
-../.venv/bin/python dashboard.py
-
-# ...or a capture on another port, or another machine
-../.venv/bin/python dashboard.py 8790
-../.venv/bin/python dashboard.py bench.local:8765
-```
-
-Points worth knowing:
-
-- **Attached plots see every sample, not the decimated file.** `--log-rate` thins what
-  lands on disk; the socket carries the full 200 Hz. So the dashboard's measured rate reads
-  200 while the capture tile reads a 5 Hz log rate, and both are correct.
-- **The socket speaks the board's own format** — a `#seq,t_ms,...` schema line, a `#`
-  banner, then one CSV row per sample, exactly as `nicla_stream.ino` prints them. So
-  `nc 127.0.0.1 8765` is a usable client, and the attaching end parses the logger with the
-  same code it uses to parse the board (`StreamSource` and `SerialSource` are
-  interchangeable; `plot.py` cannot tell which it has).
-- **A slow viewer loses its own samples, never the capture's.** Each viewer gets a bounded
-  backlog and its own writer thread; when it fills, the oldest row is dropped. A suspended
-  or wedged viewer cannot back up the serial buffer and skew log timing, which is the
-  failure this design exists to prevent. Viewer-side losses are reported separately from
-  the capture's for the same reason.
-- **The capture tile shows the logger's numbers** — its CSV path, row count, burst count
-  and live burst state — pushed over the same connection once a second.
-- **The viewer is its own program, not a mode.** Attaching shares none of the capture's
-  settings — no port, no baud, no CSV, no log rate — because those belong to whoever holds
-  the board. A plotting mode on `main.py` would be a flag that quietly invalidates half the
-  others, so there isn't one.
-- **`--plot` is a shortcut, not an exception to that.** It starts `dashboard.py` as a child
-  process pointed at this capture's own socket, which is why closing that window detaches a
-  viewer rather than stopping the capture, and why `--window` and `--fps` are simply passed
-  through to it. A dashboard that fails to start is a warning, not a dead capture.
-- It binds loopback. `--listen 0.0.0.0:8765` opens it to the network, which is
-  unauthenticated — only worth doing on a network you trust.
-
-## Browser dashboard
-
-`webdash.py` attaches to the same socket and serves the dashboard as a web page instead of
-a window. It is a third viewer alongside `dashboard.py` and `view.py`, not a replacement
-for either.
-
-```bash
-# Terminal 1: the capture, as above
-../.venv/bin/python main.py
-
-# Terminal 2: serve it, and open a browser at it
-../.venv/bin/python webdash.py --open
-```
+Tiles are declared in `TILES` in `tiles.py` and positioned by `PLACEMENT`, a 12-column grid;
+moving a widget is a one-line change, and it moves in the offline viewer too. Each tile has
+a minimum y-span (`min_span`). This matters: without it a motionless board autoscales down
+to its own quantization steps, and sensor noise renders as dramatic staircases that read as
+real signal. The floors are set near each sensor's noise level, so a resting board looks
+flat while real motion still fills the tile. Traces are strided down to ~900 points per
+tile, which is more resolution than a tile can show.
 
 It draws in the browser rather than shipping pictures to it. The server parses the stream,
 batches it into [Server-Sent Events](https://developer.mozilla.org/docs/Web/API/Server-sent_events)
@@ -320,23 +252,21 @@ Consequences of drawing client-side, all of which are the reason for it:
 
 - **Every tab is independent.** Its own ring buffers, its own window length, its own theme.
   Two people can watch one capture over different spans, and neither sees the other's
-  cursor. (The route not taken here was matplotlib's WebAgg backend, which serves one
-  shared figure as a PNG stream: one viewer's window change is everyone's, and a theme
-  cannot be a browser-side choice at all when it is baked into a raster server-side.)
-- **The server does no rendering.** It sits near 3% CPU with tabs attached, against the
-  ~95% a WebAgg-style rasteriser needs, because all it does is reformat rows.
+  cursor. This is why `main.py` has no `--window` or `--fps` to pass: neither is a property
+  of the capture, or even of the dashboard process.
+- **The server does no rendering.** It sits near 3% CPU with tabs attached, because all it
+  does is reformat rows.
 - **Light and dark themes**, from `prefers-color-scheme` with a toggle that overrides it and
   persists. Colours live in `web/dash.css` as custom properties; the charts read them back
   through `getComputedStyle` on every draw, so switching is a redraw with nothing
   reconfigured. Four trace colours are chosen against near-black and are illegible on
   white, so `tiles.LIGHT_OVERRIDES` substitutes darker equivalents for those and passes the
   rest through.
-- **It reflows.** Two tiles abreast on a tablet, one on a phone, rather than the fixed
-  1500×900 the matplotlib window is.
+- **It reflows.** Two tiles abreast on a tablet, one on a phone.
 
 Deliberately absent: any control over the board. Window length is a client-side choice
-about how much of the buffer to draw, exactly as the matplotlib dashboard's is, and neither
-program can change the rate — see *The dashboard does not change the board's rate*.
+about how much of the buffer to draw, and nothing here can change the rate — see
+*The dashboard does not change the board's rate*.
 
 Like `--listen`, it binds loopback and there is no flag to change that. It is an
 unauthenticated live feed of whatever the board can hear.
@@ -346,6 +276,66 @@ One thing worth knowing when it looks broken:
 - **A tab opens on the last 30 seconds, not on an empty window**, because the server keeps
   a short backlog for arrivals. Pick a 300 s window and the first five minutes fill in from
   the live stream rather than appearing at once.
+
+There was a matplotlib dashboard — `dashboard.py` and `plot.py` — doing this job in a
+desktop window. It is gone, and the browser one is the default because it is smoother: the
+drawing is vectors in a browser rather than a Python process pushing artists around, and
+none of the awkwardness of a GUI event loop in the same interpreter as a capture came with
+it. The tile declarations survived it, because they were never in it.
+
+[dash]: https://github.com/arduino/ArduinoAI/tree/main/NiclaSenseME-dashboard
+
+## Capture and dashboard as separate programs
+
+There was once an all-in-one mode, and it had the coupling you would expect: matplotlib
+held the main thread, so the animation callback was what drained the queue into the CSV,
+and closing the window ended the capture. Fine for a ten-minute recording, wrong for an
+overnight one, where you want to glance at the stream and walk away without taking the log
+down with you.
+
+So `main.py` is always headless and always serves. It keeps the serial port, the decimator
+and the CSV, and publishes every sample on a TCP socket; `webdash.py` reads that socket
+instead of the board. Attach and detach as often as you like — the capture never sees it.
+
+```bash
+# Terminal 1: the capture. Runs until Ctrl-C.
+../.venv/bin/python main.py --log-rate 5
+
+# Terminal 2: look at it, close the tab, come back tomorrow
+../.venv/bin/python webdash.py --open
+
+# ...or a capture on another port, or another machine
+../.venv/bin/python webdash.py 8790
+../.venv/bin/python webdash.py bench.local:8765
+```
+
+Points worth knowing:
+
+- **Attached viewers see every sample, not the decimated file.** `--log-rate` thins what
+  lands on disk; the socket carries the full 200 Hz. So the dashboard's measured rate reads
+  200 while the capture tile reads a 5 Hz log rate, and both are correct.
+- **The socket speaks the board's own format** — a `#seq,t_ms,...` schema line, a `#`
+  banner, then one CSV row per sample, exactly as `nicla_stream.ino` prints them. So
+  `nc 127.0.0.1 8765` is a usable client, and the attaching end parses the logger with the
+  same code it uses to parse the board (`StreamSource` and `SerialSource` are
+  interchangeable; nothing downstream can tell which it has).
+- **A slow viewer loses its own samples, never the capture's.** Each viewer gets a bounded
+  backlog and its own writer thread; when it fills, the oldest row is dropped. A suspended
+  or wedged viewer cannot back up the serial buffer and skew log timing, which is the
+  failure this design exists to prevent. Viewer-side losses are reported separately from
+  the capture's for the same reason.
+- **The capture tile shows the logger's numbers** — its CSV path, row count, burst count
+  and live burst state — pushed over the same connection once a second.
+- **The viewer is its own program, not a mode.** Attaching shares none of the capture's
+  settings — no port, no baud, no CSV, no log rate — because those belong to whoever holds
+  the board. A dashboard mode on `main.py` would be a flag that quietly invalidates half
+  the others, so there isn't one.
+- **`--plot` is a shortcut, not an exception to that.** It starts `webdash.py` as a child
+  process pointed at this capture's own socket, which is why closing the tab detaches a
+  viewer rather than stopping the capture, and why `--http-port` is the only thing passed
+  through to it. A dashboard that fails to start is a warning, not a dead capture.
+- It binds loopback. `--listen 0.0.0.0:8765` opens it to the network, which is
+  unauthenticated — only worth doing on a network you trust.
 
 ## Viewing a log
 
@@ -523,25 +513,23 @@ What the suite is for, module by module:
 | `test_logger.py` | Header written once however often a file is appended to; integer columns reaching disk without a decimal point; the `burst` column only when decimating |
 | `test_hub.py` | The TCP hub over a real socket: schema and banner before data, fan-out to several viewers, status as a comment, drop-oldest backpressure, and the message a second capture on a taken port gets |
 | `test_webhub.py` | `/spec` really does carry everything `tiles.py` declares; the routes, including that traversal gets nowhere; and that SSE rows arrive batched rather than one event per sample |
-| `test_tiles.py` | The declarations three renderers trust: every series names a real column, every tile is placed, nothing overlaps the capture slot, every tile has a `min_span` |
-| `test_plot.py` | Ring buffers and the autoscale rule, in the order `web/app.js` ports it |
+| `test_tiles.py` | The declarations both renderers trust: every series names a real column, every tile is placed, nothing overlaps the capture slot, every tile has a `min_span` — and that importing them drags in no renderer |
 | `test_view.py` | Envelope decimation keeping a 20 ms impact a stride would delete; reset stitching; tolerant loading of a torn row |
 | `test_config.py` | Precedence, unknown-key suggestions, and the two argparse edges documented above. Uses `main.build_parser()`, so a new flag is covered the day it is added |
 | `test_capture.py` | A whole capture end to end through `replay.py`, with a viewer attached over TCP, checking the CSV and the socket against the recording that went in |
 
-Three cases are marked `@unittest.expectedFailure`, recording known gaps rather than
-describing them: two in `test_plot.py` for the desktop dashboard not handling a board reset
-the way the other two viewers do, and one in `test_capture.py` for an unwritable `--csv`
-path coming out as a traceback rather than as the one-line error every other start-up
-failure gets. Fix any of them and the suite reports an unexpected success.
+One case is marked `@unittest.expectedFailure`, recording a known gap rather than
+describing it: `test_capture.py` on an unwritable `--csv` path coming out as a traceback
+rather than as the one-line error every other start-up failure gets. Fix it and the suite
+reports an unexpected success. (There were three; the other two recorded the desktop
+dashboard's missing board-reset handling, and went with it.)
 
 `SerialSource` is the one part not covered — auto-detect, the auto-baud sweep, the `s<N>`
 handshake, the byte-paced command writer. That is the board, and standing in for the board
 is what `replay.py` does. Those stay verified by plugging it in.
 
 `ARCHITECTURE-NOTES.md` records the places the host side does not hold together as well as
-the rest of it does, with the measurements behind each one. The expected failures above are
-the three of them that have a test.
+the rest of it does, with the measurements behind each one.
 
 ## Layout
 
@@ -561,10 +549,8 @@ the three of them that have a test.
 | `python/webhub.py` | Serves the same stream to browsers, over SSE, plus the page |
 | `python/pipeline.py` | The seam: a source's queue on one side, sample sinks on the other |
 | `python/tiles.py` | The tiles, palette and grid placement — declaration only, no drawing |
-| `python/plot.py` | The live tile grid itself, driven by whichever program owns it |
 | `python/main.py` | The capture: port, decimator, CSV, socket. Headless, always |
-| `python/dashboard.py` | The live dashboard, attached to a capture running elsewhere |
-| `python/webdash.py` | The same dashboard in a browser, attached the same way |
+| `python/webdash.py` | The dashboard: attaches to a capture and serves it to browsers |
 | `python/web/` | The browser client: page, stylesheet, drawing code, vendored uPlot |
 | `python/view.py` | Offline viewer for logged CSVs |
 | `python/testing/replay.py` | Runs a capture against a logged CSV, for when there is no board |

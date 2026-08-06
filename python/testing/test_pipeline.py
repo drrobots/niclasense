@@ -182,54 +182,28 @@ class Status(unittest.TestCase):
         self.assertEqual(status["malformed"], 0)
 
 
-class WatchSource(unittest.TestCase):
-    """watch_source closes the window when the source dies, through the plot rather than
-    pyplot -- which is what keeps matplotlib out of pipeline.py entirely."""
+class NoRenderingDependency(unittest.TestCase):
+    """pipeline.py is the seam, and a seam that imports a renderer is not one.
 
-    class FakePlot(object):
-        def __init__(self):
-            self.closed = 0
+    It used to hold watch_source, which existed to close a matplotlib window when the
+    source died -- carefully written to go through the plot object rather than pyplot so
+    that this module needed no matplotlib. That went with the desktop dashboard; both
+    remaining consumers poll source.error in their own loop instead. The check below is
+    what the care was protecting, stated directly.
+    """
 
-        def close(self):
-            self.closed += 1
+    def test_importing_the_seam_pulls_in_no_renderer(self):
+        import subprocess
+        import sys
 
-    def test_a_live_source_is_left_alone(self):
-        from pipeline import watch_source
-
-        source = FakeSource(support.ramp(3))
-        plot = self.FakePlot()
-        guarded = watch_source(source, make_drain(source, [Recorder()]), plot)
-        self.assertEqual(guarded(), 3)
-        self.assertEqual(plot.closed, 0)
-
-    def test_an_error_closes_the_window(self):
-        from pipeline import watch_source
-
-        source = FakeSource()
-        source.error = RuntimeError("the logger closed the connection")
-        plot = self.FakePlot()
-        watch_source(source, make_drain(source, []), plot)()
-        self.assertEqual(plot.closed, 1)
-
-    def test_a_stopped_source_closes_the_window_too(self):
-        from pipeline import watch_source
-
-        source = FakeSource()
-        source.running = False
-        plot = self.FakePlot()
-        watch_source(source, make_drain(source, []), plot)()
-        self.assertEqual(plot.closed, 1)
-
-    def test_queued_samples_are_delivered_before_the_window_goes(self):
-        """The last second of a capture should reach the plot, not die in the queue."""
-        from pipeline import watch_source
-
-        source = FakeSource(support.ramp(5))
-        source.running = False
-        sink = Recorder()
-        plot = self.FakePlot()
-        watch_source(source, make_drain(source, [sink]), plot)()
-        self.assertEqual(len(sink.samples), 5)
+        code = (
+            "import sys; import pipeline; "
+            "print(any(m == 'matplotlib' or m.startswith('matplotlib.') for m in sys.modules))"
+        )
+        out = subprocess.check_output(
+            [sys.executable, "-c", code], cwd=support.PYTHON_DIR
+        )
+        self.assertEqual(out.strip(), b"False")
 
 
 if __name__ == "__main__":

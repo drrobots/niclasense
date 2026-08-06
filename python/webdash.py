@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
-"""Browser dashboard for a capture that is already running.
+"""The dashboard. Attaches to a capture that is already running and draws it in a browser.
 
-The same job dashboard.py does, in a browser instead of a window. main.py owns the board
-and the CSV and serves every sample on a TCP socket. This attaches to that socket and
-re-serves it over HTTP, and the page it hands out draws the tiles.
+main.py owns the board and the CSV and serves every sample on a TCP socket. This attaches
+to that socket and re-serves it over HTTP, and the page it hands out draws the tiles. It
+is the only live viewer in the project -- there was a matplotlib one, and this replaced it
+outright: server-rendered vectors in a browser are smoother than a Python process pushing
+artists around, and everything awkward about a GUI event loop sharing an interpreter with
+a capture went with it.
 
-Unlike the matplotlib dashboard, the window length is not a setting of this process: every
-tab keeps its own buffers and picks its own window, so two people can watch the same
-capture over different spans. Which is why there is no --window or --fps here.
+The window length is not a setting of this process: every tab keeps its own buffers and
+picks its own window and theme, so two people can watch the same capture over different
+spans. Which is why there is no --window or --fps here, and why main.py has none to pass.
 
 Nothing goes back to the board. This attaches, reads, and draws -- there is no control
-channel, by design, exactly as with dashboard.py.
+channel, by design.
 
 Examples:
+    python main.py --plot                    # the capture starts this for you
     python main.py                           # in one terminal: the capture
     python webdash.py                        # in another: this, then open the URL
     python webdash.py --open                 # ... and open a browser at it
@@ -38,10 +42,11 @@ STATUS_INTERVAL = 1.0
 def serve(source, drain, hub, status):
     """Move samples from the source to the browsers until the capture goes away.
 
-    dashboard.py hands this job to matplotlib -- plt.show() owns the thread and the
-    animation timer calls the drain. There is no such loop here: the HTTP server has its
-    own threads and this one is free, so it does what run_headless does, which is poll the
-    source and drain on a short sleep.
+    The HTTP server has its own threads and this one is free, so it does what
+    main.py's run_headless does: poll the source and drain on a short sleep. The
+    matplotlib dashboard this replaced could not -- plt.show() owned the thread, so the
+    drain had to be called from an animation timer and a dead source had to be noticed
+    from inside a draw callback.
     """
     last_status = 0.0
     try:

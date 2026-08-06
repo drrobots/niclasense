@@ -129,21 +129,43 @@ class Bounds(unittest.TestCase):
         self.assertGreater(tiles.MAX_POINTS, 0)
 
 
-class ReExports(unittest.TestCase):
-    """plot.py re-exports these because view.py has always imported them from there."""
+class NoRenderingDependency(unittest.TestCase):
+    """Declaration only: no matplotlib, no browser, no drawing of any kind.
 
-    def test_plot_still_re_exports_what_view_imports(self):
+    This is the property that lets webhub.py serve the whole module to a browser as JSON
+    while view.py draws the same declarations into a matplotlib figure. It was worth a
+    test even when plot.py re-exported these constants; now that view.py imports them
+    from here directly, it is the only thing keeping a stray `import matplotlib` in
+    tiles.py from putting the plotting layer inside the capture's web server.
+    """
+
+    def test_importing_the_declarations_pulls_in_no_renderer(self):
+        import subprocess
+        import sys
+
+        code = (
+            "import sys; import tiles; "
+            "print(any(m == 'matplotlib' or m.startswith('matplotlib.') for m in sys.modules))"
+        )
+        out = subprocess.check_output(
+            [sys.executable, "-c", code], cwd=support.PYTHON_DIR
+        )
+        self.assertEqual(out.strip(), b"False")
+
+    def test_view_takes_its_constants_from_here(self):
+        """It used to get them from plot.py, which dragged matplotlib's plotting layer in
+        to fetch a colour. plot.py is gone; this is where they live."""
         import matplotlib
 
         matplotlib.use("Agg")
-        import plot
+        import view
 
         for name in (
             "ACCENT", "BSEC_ACCURACY_NOTES", "BSEC_TILES", "CAPTURE_SLOT", "FONT",
-            "GRID", "MAX_POINTS", "MAX_WINDOW_S", "MIN_WINDOW_S", "MUTED", "PAGE_BG",
-            "PLACEMENT", "TEXT", "TILE_BG", "TILE_EDGE", "TILES", "XYZ",
+            "GRID", "MUTED", "PAGE_BG", "PLACEMENT", "TEXT", "TILE_BG", "TILE_EDGE",
+            "TILES",
         ):
-            self.assertIs(getattr(plot, name), getattr(tiles, name), name)
+            self.assertIs(getattr(view, name), getattr(tiles, name), name)
 
 
 if __name__ == "__main__":

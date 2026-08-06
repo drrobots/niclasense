@@ -565,8 +565,8 @@ class StreamSource(_ThreadedSource):
     """Reads the same CSV lines from a logger listening on TCP (see hub.py).
 
     Interchangeable with SerialSource from the outside: same queue, same counters, same
-    describe(). That is the whole point -- LivePlot cannot tell the difference, so
-    attaching a plot to a running capture needs no plotting code at all.
+    describe(). That is the whole point -- a viewer cannot tell the difference, so
+    attaching a dashboard to a running capture needs no capture code at all.
 
     Note the two kinds of loss are counted separately. `dropped` is this process falling
     behind its own socket; the logger's own drops arrive in the status dict and belong to
@@ -741,7 +741,7 @@ class SerialControl(object):
 def create_source(args):
     """Build the source the CLI asked for.
 
-    Serial only: StreamSource is constructed directly by dashboard.py, which has no
+    Serial only: StreamSource is constructed directly by webdash.py, which has no
     argparse namespace in common with the capture.
     """
     return SerialSource(

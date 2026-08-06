@@ -5,13 +5,12 @@ of plain callables on the other. Each sink takes one sample tuple and knows noth
 the others -- the CSV writer, the plot's ring buffers and the socket hub are peers, and
 adding a fourth would not touch any of the first three.
 
-Nothing here imports an entry point. main.py and dashboard.py both import this; neither
+Nothing here imports an entry point. main.py and webdash.py both import this; neither
 imports the other, which is what keeps the dashboard genuinely independent of the logger
 rather than independent-looking but coupled at the module level.
 """
 
 import queue
-import sys
 
 
 def make_log_sink(log, decimator=None):
@@ -100,26 +99,3 @@ def attached_status(source):
         return published
 
     return status
-
-
-def watch_source(source, drain, plot):
-    """Wrap drain so a source that dies closes the plot window instead of freezing it.
-
-    The capture checks source.error on every pass of its own loop; under matplotlib there
-    is no such loop -- plt.show() owns the thread -- so the animation callback is the only
-    place left to check it from.
-
-    Closing goes through the plot rather than plt.close() so that this module needs no
-    matplotlib at all, and so the animation is stopped in the one place that knows it
-    exists. See LivePlot.close().
-    """
-
-    def guarded():
-        moved = drain()
-        if source.error is not None or not source.running:
-            reason = source.error if source.error is not None else "source stopped"
-            sys.stderr.write("\n%s\n" % reason)
-            plot.close()
-        return moved
-
-    return guarded

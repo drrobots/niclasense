@@ -3,11 +3,11 @@
  * Reads /spec for the tile layout (so tiles.py stays the only place it is declared),
  * subscribes to /stream for samples, and draws one uPlot chart per tile.
  *
- * The autoscale rule is ported line for line from plot.py's _refresh and the order of its
+ * The autoscale rule is shared with view.py's _draw_traces, and the order of its
  * three steps matters: take min/max over the *undecimated* window, widen to min_span, then
  * pad 12%. Scaling the strided data instead makes a tile's range jitter as samples move in
  * and out of the stride, and padding before widening changes the floor a quiet sensor sits
- * at. Either mistake shows up as tiles that breathe differently from the desktop dashboard,
+ * at. Either mistake shows up as tiles that breathe differently from the offline viewer,
  * which is a miserable thing to chase.
  */
 

@@ -158,6 +158,115 @@ class FullRateCapture(CaptureFixture):
         self.assertEqual(sum(1 for line in lines if line.startswith("host_iso")), 1)
 
 
+class PlotFlag(CaptureFixture):
+    """--plot starts webdash.py as a child attached over our own socket.
+
+    A real child process, because that is the whole claim: the dashboard is not a mode of
+    the capture, it is a viewer that happens to have been started for you. If it were
+    imported instead, its HTTP server and its clients would share this interpreter with
+    the thread that has to keep draining the serial queue.
+
+    $BROWSER is pointed at /usr/bin/true for the duration so webdash.py's --open does not
+    put a window on the screen of whoever is running the suite. It is inherited by the
+    child, which is where the open actually happens.
+    """
+
+    def setUp(self):
+        CaptureFixture.setUp(self)
+        self.http_port = support.free_port()
+        previous = os.environ.get("BROWSER")
+        os.environ["BROWSER"] = "/usr/bin/true"
+        self.addCleanup(self._restore_browser, previous)
+
+    @staticmethod
+    def _restore_browser(previous):
+        if previous is None:
+            os.environ.pop("BROWSER", None)
+        else:
+            os.environ["BROWSER"] = previous
+
+    def fetch(self, path):
+        import urllib.request
+
+        response = urllib.request.urlopen(
+            "http://127.0.0.1:%d%s" % (self.http_port, path), timeout=5.0
+        )
+        return response.status, response.read()
+
+    def test_the_dashboard_comes_up_and_serves_its_page(self):
+        import json
+
+        recording = self.recording(support.ramp(2000, hz=200.0, ax_g=0.5))
+        thread, result = self.capture(recording, [
+            "--csv", self.csv, "--plot",
+            "--http-port", "%d" % self.http_port, "--duration", "5",
+        ])
+        self.addCleanup(thread.join, 30.0)
+
+        self.assertTrue(
+            support.wait_for(lambda: self._serving(), timeout=15.0, interval=0.1),
+            "the dashboard never started serving",
+        )
+        # It is the real page, and the spec it hands out is this project's.
+        self.assertEqual(self.fetch("/")[0], 200)
+        spec = json.loads(self.fetch("/spec")[1].decode("utf-8"))
+        self.assertEqual(spec["columns"], list(COLUMNS))
+
+        thread.join(timeout=30.0)
+        self.assertEqual(result["code"], 0)
+
+    def _serving(self):
+        try:
+            return self.fetch("/")[0] == 200
+        except Exception:
+            return False
+
+    def test_the_dashboard_attaches_as_an_ordinary_viewer(self):
+        """Over the same socket anything else would use -- so the capture counts it, and
+        killing it would leave the capture running."""
+        recording = self.recording(support.ramp(2000, hz=200.0))
+        thread, result = self.capture(recording, [
+            "--csv", self.csv, "--plot",
+            "--http-port", "%d" % self.http_port, "--duration", "5",
+        ])
+        self.addCleanup(thread.join, 30.0)
+
+        self.assertTrue(support.wait_for(self._serving, timeout=15.0, interval=0.1))
+        # A second viewer alongside it, proving the socket is not exclusive to the child.
+        viewer = StreamSource(host="127.0.0.1", port=self.port, timeout=10.0)
+        viewer.open()
+        self.addCleanup(viewer.stop)
+        viewer.start()
+
+        thread.join(timeout=30.0)
+        self.assertEqual(result["code"], 0)
+        self.assertGreater(viewer.queue.qsize(), 0)
+
+    def test_the_capture_survives_a_dashboard_that_will_not_start(self):
+        """A convenience viewer failing is not a reason to lose a good capture.
+
+        Forced here by handing --plot a port that is already taken, which is exactly what
+        a second `main.py --plot` on one machine does.
+        """
+        import socket
+
+        squatter = socket.socket()
+        squatter.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        squatter.bind(("127.0.0.1", self.http_port))
+        squatter.listen(1)
+        self.addCleanup(squatter.close)
+
+        recording = self.recording(support.ramp(1000, hz=200.0))
+        thread, result = self.capture(recording, [
+            "--csv", self.csv, "--plot",
+            "--http-port", "%d" % self.http_port, "--duration", "2",
+        ])
+        thread.join(timeout=30.0)
+        self.assertEqual(result["code"], 0)
+        _header, written = read_csv(self.csv)
+        self.assertGreater(len(written), 200)
+
+
 class DecimatedCapture(CaptureFixture):
     def test_the_file_is_thinned_and_the_socket_is_not(self):
         """The property make_drain exists to guarantee, checked through both artefacts."""

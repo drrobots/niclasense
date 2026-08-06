@@ -3,15 +3,16 @@
 
 This is the capture: it owns the serial port, the decimator and the CSV, and it is always
 headless. Every sample goes out on a TCP socket as well as to the file (see hub.py for the
-protocol), and drawing is somebody else's process -- dashboard.py for a window, webdash.py
-for a browser, `nc` for the raw rows.
+protocol), and drawing is somebody else's process -- webdash.py for a browser dashboard,
+`nc` for the raw rows.
 
-There is no in-process plot, deliberately. A window that shares this interpreter shares
+There is no in-process plot, deliberately. A viewer that shares this interpreter shares
 its GIL and its lifetime with the logging, which is the wrong coupling for something meant
 to run for hours: the capture is the durable thing and viewers come and go over the
 socket, here or on another machine. --plot is only a convenience for the common case of
-wanting one immediately -- it starts dashboard.py as a *child* pointed at our own socket,
-so it attaches like any other viewer and closing it leaves the capture running.
+wanting one immediately -- it starts webdash.py as a *child* pointed at our own socket and
+opens a browser at it, so it attaches like any other viewer and closing the tab leaves the
+capture running.
 
 Every switch is also settable from an INI file (--config); see config.py and
 example.conf. The command line still wins, so a file describes a standing setup and
@@ -19,7 +20,7 @@ flags vary one run of it.
 
 Examples:
     python main.py                                   # log and serve; attach when you like
-    python main.py --plot                            # ...and open a dashboard on it now
+    python main.py --plot                            # ...and open a browser dashboard now
     python main.py --csv runs/walk.csv --duration 15
     python main.py --listen 0.0.0.0:8790             # serve somewhere else
     python main.py --config overnight.conf           # a setup that lives in a file
@@ -46,6 +47,7 @@ from sources import (
     create_source,
     list_serial_ports,
 )
+from webhub import DEFAULT_HTTP_PORT
 
 
 def build_parser():
@@ -100,16 +102,12 @@ def build_parser():
     )
     parser.add_argument(
         "--plot", action="store_true",
-        help="Also start dashboard.py, attached to this capture over the socket. "
-             "Closing its window detaches it; the capture keeps going.",
+        help="Also start webdash.py against this capture's socket and open a browser at "
+             "it. Closing the tab detaches it; the capture keeps going.",
     )
     parser.add_argument(
-        "--window", type=float, default=30.0,
-        help="Plot window, seconds. Passed to the dashboard --plot starts.",
-    )
-    parser.add_argument(
-        "--fps", type=float, default=20.0,
-        help="Plot refresh rate. Passed to the dashboard --plot starts.",
+        "--http-port", type=int, default=DEFAULT_HTTP_PORT,
+        help="Port for the dashboard --plot starts. Ignored without --plot.",
     )
     parser.add_argument(
         "--duration", type=float, default=0.0,
@@ -154,25 +152,30 @@ def default_csv_path():
     return os.path.join("logs", "nicla_%s.csv" % stamp)
 
 
-def launch_viewer(endpoint, window, fps):
-    """Start dashboard.py against our own socket. Returns the process, or None.
+def launch_viewer(endpoint, http_port):
+    """Start webdash.py against our own socket. Returns the process, or None.
 
-    A child rather than an import: matplotlib in this interpreter would put a GUI event
-    loop on the thread that has to keep draining the serial queue, which is the coupling
-    the split exists to remove. Over the socket it is an ordinary viewer that happens to
-    have been started for you, and it can be closed, reopened, or replaced by webdash.py
-    without the capture being involved.
+    A child rather than an import: the dashboard's HTTP server and its clients would
+    otherwise share this interpreter with the thread that has to keep draining the serial
+    queue, which is the coupling the split exists to remove. Over the socket it is an
+    ordinary viewer that happens to have been started for you, and it can be closed,
+    reopened, or joined by a second one without the capture being involved.
+
+    Note what is *not* passed: window length and refresh rate. Those are per-tab in the
+    browser dashboard rather than per-process, which is the point of it -- two tabs can
+    watch this capture over different spans -- so there is nothing for the capture to say
+    about them.
 
     A dashboard that will not start is reported and shrugged off. The samples are already
     reaching the CSV and the socket by the time we get here, and killing a good capture
-    because its convenience window failed would be the wrong trade.
+    because its convenience viewer failed would be the wrong trade.
     """
-    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.py")
-    argv = [sys.executable, script, endpoint, "--window", "%g" % window, "--fps", "%g" % fps]
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webdash.py")
+    argv = [sys.executable, script, endpoint, "--http-port", "%d" % http_port, "--open"]
     try:
         return subprocess.Popen(argv)
     except OSError as exc:
-        print("warning: could not start dashboard.py (%s); the capture continues" % exc,
+        print("warning: could not start webdash.py (%s); the capture continues" % exc,
               file=sys.stderr)
         return None
 
@@ -306,7 +309,7 @@ def main(argv=None):
         if log is not None:
             log.close()
         return 1
-    print("serving samples on %s -- plot it with: python dashboard.py %s"
+    print("serving samples on %s -- watch it with: python webdash.py %s"
           % (hub.describe(), hub.describe()))
 
     def status():
@@ -317,7 +320,7 @@ def main(argv=None):
         hub.broadcast,
     ])
 
-    viewer = launch_viewer(hub.describe(), args.window, args.fps) if args.plot else None
+    viewer = launch_viewer(hub.describe(), args.http_port) if args.plot else None
 
     try:
         run_headless(source, drain, args.duration, hub, status)
@@ -326,8 +329,9 @@ def main(argv=None):
         hub.stop()
         if viewer is not None:
             # The hub is already shut, so the dashboard's own source has died and it is
-            # closing its window of its own accord. Give it that moment before insisting,
-            # so the usual case exits without a signal.
+            # shutting down of its own accord -- telling its open tabs the capture ended
+            # on the way out. Give it that moment before insisting, so the usual case
+            # exits without a signal and the page says what happened.
             try:
                 viewer.wait(timeout=2.0)
             except subprocess.TimeoutExpired:

@@ -2,9 +2,14 @@
 """Offline viewer for the CSVs main.py writes.
 
 The live dashboard shows the last N seconds of a stream; this shows a whole file at
-once. Same tiles, same palette, same 12-column grid, so a recording reads exactly like
-the stream it came from -- what changes is the time axis, which is now a fixed span you
-scrub and zoom rather than a window sliding under the newest sample.
+once. Same tiles, same palette, same 12-column grid -- all read from tiles.py, which the
+browser dashboard reads too -- so a recording looks like the stream it came from. What
+changes is the time axis, which is now a fixed span you scrub and zoom rather than a
+window sliding under the newest sample.
+
+This is the only matplotlib program left in the project. Live drawing is the browser's
+job now; matplotlib earns its place here because a finished file wants a scrub strip, a
+span selector and a cursor rather than a scrolling window.
 
 Examples:
     python view.py                              # newest file in logs/
@@ -31,7 +36,7 @@ from matplotlib.transforms import blended_transform_factory
 from matplotlib.widgets import SpanSelector
 
 from columns import BURST_COLUMN, HOST_TIME_COLUMN
-from plot import (
+from tiles import (
     ACCENT,
     BSEC_ACCURACY_NOTES,
     BSEC_TILES,
