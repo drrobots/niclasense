@@ -23,18 +23,9 @@
  *   b<N>     set the serial baud to N (e.g. "b115200"), clamped to
  *            [9600, 1000000]; reopens the port, so the host must reconnect
  *            at the new rate afterwards
- *
- * Set STREAM_BLE to 1 to additionally advertise the same sample as a packed binary
- * notification over BLE. See README.md.
  */
 
 #include "Arduino_BHY2.h"
-
-#define STREAM_BLE 0
-
-#if STREAM_BLE
-#include <ArduinoBLE.h>
-#endif
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -96,25 +87,6 @@ static uint32_t sequence   = 0;
 static uint32_t timeOrigin = 0;
 static uint32_t nextSample = 0;
 
-#if STREAM_BLE
-// Sample as sent over BLE: uint32 seq, uint32 t_ms, then the remaining 25 columns as
-// float32 (bsec_acc is widened to float for a uniform layout). 108 bytes total, which
-// fits in a single notification at the ATT MTU macOS negotiates.
-struct __attribute__((packed)) BleSample {
-  uint32_t seq;
-  uint32_t t_ms;
-  float    values[25];
-};
-
-static const uint32_t BLE_STREAM_HZ        = 10;
-static const uint32_t BLE_STREAM_PERIOD_MS = 1000 / BLE_STREAM_HZ;
-static uint32_t       nextBleSample        = 0;
-
-BLEService           streamService("6e400001-b5a3-f393-e0a9-e50e24dcca9e");
-BLECharacteristic    sampleChar   ("6e400003-b5a3-f393-e0a9-e50e24dcca9e",
-                                   BLERead | BLENotify, sizeof(BleSample));
-#endif
-
 // ---------------------------------------------------------------------------
 // Header
 // ---------------------------------------------------------------------------
@@ -145,8 +117,7 @@ void printHeader() {
 void setup() {
   Serial.begin(serialBaud);
 
-  // Standalone: no ESLOV and no BHY2 BLE handler, which leaves ArduinoBLE free for the
-  // custom service below.
+  // Standalone: no ESLOV and no BHY2 BLE handler.
   BHY2.begin(NICLA_STANDALONE);
 
   accel.begin(MOTION_RATE_HZ);
@@ -164,17 +135,6 @@ void setup() {
   // Must follow begin() — the range is applied to the running virtual sensor.
   accel.setRange(ACCEL_RANGE_G);
   gyro.setRange(GYRO_RANGE_DPS);
-
-#if STREAM_BLE
-  if (BLE.begin()) {
-    BLE.setLocalName("NiclaStream");
-    BLE.setDeviceName("NiclaStream");
-    streamService.addCharacteristic(sampleChar);
-    BLE.addService(streamService);
-    BLE.setAdvertisedService(streamService);
-    BLE.advertise();
-  }
-#endif
 
   timeOrigin = millis();
   nextSample = timeOrigin;
@@ -347,21 +307,5 @@ void loop() {
     if ((int32_t)(now - nextSample) >= 0) {
       nextSample = now + streamPeriodMs;
     }
-
-#if STREAM_BLE
-    if ((int32_t)(now - nextBleSample) >= 0) {
-      BleSample sample;
-      sample.seq  = sequence;
-      sample.t_ms = now - timeOrigin;
-      memcpy(sample.values, values, sizeof(values));
-      sample.values[24] = (float)bsec.accuracy();
-      sampleChar.writeValue(&sample, sizeof(sample));
-      nextBleSample = now + BLE_STREAM_PERIOD_MS;
-    }
-#endif
   }
-
-#if STREAM_BLE
-  BLE.poll();
-#endif
 }

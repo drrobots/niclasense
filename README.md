@@ -52,7 +52,6 @@ you get `Resource busy`.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--source` | `serial` | `serial` or `ble` |
 | `--port` | auto | Serial device |
 | `--baud` | `1000000` | Baud to try first; the sketch boots at 1000000 |
 | `--no-autobaud` | off | Fail instead of trying other rates when `--baud` yields nothing |
@@ -62,7 +61,6 @@ you get `Resource busy`.
 | `--fps` | `20` | Plot refresh rate |
 | `--no-plot` | off | Log without opening a window |
 | `--duration` | `0` | Stop after N seconds (headless only; 0 = until Ctrl-C) |
-| `--ble-name` | `NiclaStream` | BLE local name to scan for |
 
 ```
 # 5 Hz baseline, full 200 Hz for a second either side of any real motion
@@ -167,22 +165,6 @@ logging — the reader thread fills a queue that the animation callback drains o
 thread (macOS requires matplotlib to own the main thread).
 
 [dash]: https://github.com/arduino/ArduinoAI/tree/main/NiclaSenseME-dashboard
-
-## BLE mode
-
-USB is the primary path. For untethered use, set `#define STREAM_BLE 1` at the top of
-`nicla_stream.ino`, reflash, and run with `--source ble`.
-
-The BLE path sends a packed 108-byte binary frame (`uint32 seq`, `uint32 t_ms`, 25 ×
-`float32`) as a single notification, at 10 Hz rather than 200. Binary because BLE is
-packet-based anyway, and 108 bytes fits inside the ATT MTU macOS negotiates. Python unpacks
-it into the identical column set, so the CSV is interchangeable between transports.
-
-This works because `BHY2.begin(NICLA_STANDALONE)` skips the library's own BLE handler,
-leaving `ArduinoBLE` free for the sketch's custom service.
-
-**BLE mode is written but untested** — it was not exercised against real hardware, since the
-board was flashed in USB mode throughout.
 
 ## Throughput: why 200 Hz, and why 1 Mbaud
 
@@ -299,8 +281,8 @@ bursts cannot exceed whatever the board is streaming.
 | `nicla_bench/nicla_bench.ino` | Benchmark firmware: free-runs each candidate encoding |
 | `python/bench/runbench.py` | Drives the benchmark, reports Hz and link use per encoding |
 | `python/bench/capture.py` | Raw capture: bytes/line, achieved rate, dropped samples |
-| `python/columns.py` | Single source of truth for the schema, shared by both transports |
-| `python/sources.py` | `SerialSource` and `BleSource`, both threaded into a queue |
+| `python/columns.py` | Single source of truth for the schema |
+| `python/sources.py` | `SerialSource`, threaded into a queue |
 | `python/logger.py` | CSV appender, header written only for new files |
 | `python/plot.py` | Live tiled dashboard |
 | `python/main.py` | CLI entry point |
@@ -310,7 +292,7 @@ bursts cannot exceed whatever the board is streaming.
 - Board: Arduino Nicla Sense ME, FQBN `arduino:mbed_nicla:nicla_sense`
 - Core `arduino:mbed_nicla` 4.6.0, library `Arduino_BHY2` 1.0.8
 - Python 3.9 in `.venv` — the code stays 3.9-compatible
-- `pyserial` 3.5, `matplotlib` 3.9.4, `bleak` 1.1.1
+- `pyserial` 3.5, `matplotlib` 3.9.4
 
 Recreate the environment with:
 

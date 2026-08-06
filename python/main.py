@@ -5,7 +5,6 @@ Examples:
     python main.py                                   # auto-detect port, log + plot
     python main.py --csv runs/walk.csv --window 60
     python main.py --no-plot --duration 15           # headless capture
-    python main.py --source ble                      # requires STREAM_BLE 1 firmware
     python main.py --list-ports
 """
 
@@ -32,10 +31,6 @@ def parse_args(argv=None):
         description="Stream, log, and plot Nicla Sense ME sensor data.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument(
-        "--source", choices=("serial", "ble"), default="serial",
-        help="Transport to read from.",
-    )
     parser.add_argument("--port", default=None, help="Serial port (default: auto-detect).")
     parser.add_argument(
         "--baud", type=int, default=1000000,
@@ -49,8 +44,6 @@ def parse_args(argv=None):
         "--rate", type=int, default=0,
         help="Ask the board to stream at this many Hz on connect (0 = leave it alone).",
     )
-    parser.add_argument("--ble-name", default="NiclaStream", help="BLE local name to scan for.")
-    parser.add_argument("--ble-address", default=None, help="BLE address, skips scanning.")
     parser.add_argument(
         "--csv", default=None,
         help="CSV to append to (default: logs/nicla_<timestamp>.csv). Use 'none' to skip logging.",

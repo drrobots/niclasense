@@ -1,4 +1,4 @@
-"""Schema shared by the Arduino sketch, both transports, and the CSV writer.
+"""Schema shared by the Arduino sketch, the transport, and the CSV writer.
 
 This mirrors the header emitted by nicla_stream/nicla_stream.ino. If you change the
 column list there, change it here too -- SerialSource validates the board's header
@@ -37,12 +37,6 @@ INTEGER_COLUMNS = frozenset(
 
 # Per-column parser, positionally aligned with COLUMNS.
 PARSERS = tuple(int if c in INTEGER_COLUMNS else float for c in COLUMNS)
-
-# BLE frame layout: uint32 seq, uint32 t_ms, then the remaining 25 columns as float32.
-BLE_STRUCT_FORMAT = "<II25f"
-BLE_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
-BLE_SAMPLE_CHAR_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
-BLE_DEFAULT_NAME = "NiclaStream"
 
 # USB VID/PID for the Nicla Sense ME, used to auto-detect the port.
 NICLA_USB_VID = 0x2341

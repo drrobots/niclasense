@@ -1,30 +1,23 @@
 """Data sources for the Nicla Sense ME stream.
 
-Both SerialSource and BleSource run their I/O on a background thread and hand finished
-samples to a queue.Queue. That keeps the main thread free for matplotlib, which on macOS
-insists on owning it.
+SerialSource runs its I/O on a background thread and hands finished samples to a
+queue.Queue. That keeps the main thread free for matplotlib, which on macOS insists on
+owning it.
 
 A sample is a tuple in COLUMNS order: (seq, t_ms, ax_g, ..., bsec_acc).
 """
 
 import queue
-import struct
 import sys
 import threading
 import time
 
 from columns import (
-    BLE_DEFAULT_NAME,
-    BLE_SAMPLE_CHAR_UUID,
-    BLE_SERVICE_UUID,
-    BLE_STRUCT_FORMAT,
     COLUMNS,
     NICLA_USB_PIDS,
     NICLA_USB_VID,
     PARSERS,
 )
-
-BLE_FRAME_SIZE = struct.calcsize(BLE_STRUCT_FORMAT)
 
 # Baud rates offered in the GUI and swept during auto-detection, fastest first. 1 Mbaud is
 # what the sketch boots at and the nRF52832 UARTE's maximum; the rest are the standard
@@ -512,78 +505,6 @@ class SerialSource(_ThreadedSource):
 
 
 # ---------------------------------------------------------------------------
-# BLE
-# ---------------------------------------------------------------------------
-
-
-class BleSource(_ThreadedSource):
-    """Subscribes to the sketch's BLE notify characteristic.
-
-    Requires the sketch to be built with STREAM_BLE 1.
-    """
-
-    def __init__(self, name=BLE_DEFAULT_NAME, address=None, max_queue=20000):
-        _ThreadedSource.__init__(self, max_queue=max_queue)
-        self.name = name
-        self.address = address
-        self.malformed = 0
-        self._loop = None
-
-    def open(self):
-        # Connection happens on the reader thread's event loop; nothing to do here.
-        return self
-
-    def _on_notify(self, _sender, data):
-        if len(data) != BLE_FRAME_SIZE:
-            self.malformed += 1
-            return
-        values = struct.unpack(BLE_STRUCT_FORMAT, bytes(data))
-        # Everything after seq/t_ms travels as float32 for a uniform layout; restore the
-        # integral columns so BLE rows match serial rows exactly.
-        self._emit(tuple(parse(v) for parse, v in zip(PARSERS, values)))
-
-    def _run(self):
-        import asyncio
-
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
-        try:
-            self._loop.run_until_complete(self._stream())
-        finally:
-            self._loop.close()
-
-    async def _stream(self):
-        import asyncio
-
-        from bleak import BleakClient, BleakScanner
-
-        address = self.address
-        if address is None:
-            device = await BleakScanner.find_device_by_filter(
-                lambda d, ad: (d.name or "") == self.name
-                or BLE_SERVICE_UUID.lower() in [u.lower() for u in ad.service_uuids],
-                timeout=15.0,
-            )
-            if device is None:
-                raise SourceError(
-                    "No BLE device named %r found. Check the sketch was built with "
-                    "STREAM_BLE 1, or pass --ble-address." % self.name
-                )
-            address = device
-
-        async with BleakClient(address) as client:
-            await client.start_notify(BLE_SAMPLE_CHAR_UUID, self._on_notify)
-            while not self._stop.is_set():
-                if not client.is_connected:
-                    raise SourceError("BLE connection lost.")
-                await asyncio.sleep(0.2)
-            await client.stop_notify(BLE_SAMPLE_CHAR_UUID)
-
-    def describe(self):
-        return "BLE %s" % (self.address or self.name)
-
-
-# ---------------------------------------------------------------------------
 # Runtime control
 # ---------------------------------------------------------------------------
 
@@ -634,8 +555,6 @@ class SerialControl(object):
 
 def create_source(args):
     """Build the source the CLI asked for."""
-    if args.source == "ble":
-        return BleSource(name=args.ble_name, address=args.ble_address)
     return SerialSource(
         port=args.port, baud=args.baud, autobaud=not args.no_autobaud
     )
