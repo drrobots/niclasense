@@ -31,7 +31,8 @@
 // Configuration
 // ---------------------------------------------------------------------------
 
-static const char FIRMWARE_VERSION[] = "nicla-stream v2";
+static const char SENSOR_NAME[] = "Sonata In-Situ Sensor";
+static const char FIRMWARE_VERSION[] = "nicla-stream v3";
 
 // Serial is a real UART, not USB CDC -- the NICLA variant leaves SERIAL_CDC commented out
 // and the USB port is a CMSIS-DAP probe bridging to the nRF52832's UARTE. So this is the
@@ -93,6 +94,8 @@ static uint32_t nextSample = 0;
 
 void printHeader() {
   Serial.print("# ");
+  Serial.print(SENSOR_NAME);
+  Serial.print(": ");
   Serial.print(FIRMWARE_VERSION);
   Serial.print(" rate_hz=");
   Serial.print(streamHz);
