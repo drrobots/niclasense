@@ -587,8 +587,9 @@ class StreamSource(_ThreadedSource):
             sock = socket.create_connection((self.host, self.port), timeout=self.timeout)
         except OSError as exc:
             raise SourceError(
-                "Could not attach to %s:%d (%s). Start a logger there with "
-                "--listen, or pass --attach HOST:PORT." % (self.host, self.port, exc)
+                "Could not attach to %s:%d (%s). Start a capture there with "
+                "'main.py --listen', or name a different one."
+                % (self.host, self.port, exc)
             )
         sock.settimeout(self.timeout)
         self._socket = sock
@@ -738,12 +739,11 @@ class SerialControl(object):
 
 
 def create_source(args):
-    """Build the source the CLI asked for: the board, or a logger already reading it."""
-    if getattr(args, "attach", None):
-        from hub import parse_endpoint
+    """Build the source the CLI asked for.
 
-        host, port = parse_endpoint(args.attach)
-        return StreamSource(host=host, port=port)
+    Serial only: StreamSource is constructed directly by dashboard.py, which has no
+    argparse namespace in common with the capture.
+    """
     return SerialSource(
         port=args.port, baud=args.baud, autobaud=not args.no_autobaud
     )

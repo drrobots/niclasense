@@ -64,8 +64,7 @@ you get `Resource busy`.
 | `--fps` | `20` | Plot refresh rate |
 | `--no-plot` | off | Log without opening a window |
 | `--duration` | `0` | Stop after N seconds (headless only; 0 = until Ctrl-C) |
-| `--listen` | off | Serve the live stream to attachable plots, default `127.0.0.1:8765` |
-| `--attach` | off | Plot a logger already running with `--listen` instead of the board |
+| `--listen` | off | Serve the live stream for `dashboard.py`, default `127.0.0.1:8765` |
 
 ```
 # 5 Hz baseline, full 200 Hz for a second either side of any real motion
@@ -176,7 +175,8 @@ Ingest runs at the full 200 Hz regardless of the redraw rate, so plotting never 
 logging — the reader thread fills a queue that the animation callback drains on the main
 thread (macOS requires matplotlib to own the main thread). That is also why closing the
 window ends an all-in-one run: matplotlib owns the loop that drives the CSV. Run the
-capture with `--listen` when you want the two to have separate lifetimes.
+capture with `--listen` and plot it from `dashboard.py` when you want the two to have
+separate lifetimes.
 
 [dash]: https://github.com/arduino/ArduinoAI/tree/main/NiclaSenseME-dashboard
 
@@ -187,8 +187,8 @@ animation callback is what drains the queue into the CSV, and closing the window
 capture. That is fine for a ten-minute recording and wrong for an overnight one, where you
 want to glance at the stream and walk away without taking the log down with you.
 
-`--listen` splits them. The logger keeps the serial port, the decimator and the CSV, and
-publishes every sample on a TCP socket; `--attach` is the same dashboard reading that
+`--listen` splits them. `main.py` keeps the serial port, the decimator and the CSV, and
+publishes every sample on a TCP socket; `dashboard.py` is the same dashboard reading that
 socket instead of the board. Attach and detach as often as you like — the capture never
 sees it.
 
@@ -197,7 +197,11 @@ sees it.
 ../.venv/bin/python main.py --no-plot --listen --log-rate 5
 
 # Terminal 2: look at it, close the window, come back tomorrow
-../.venv/bin/python main.py --attach
+../.venv/bin/python dashboard.py
+
+# ...or a capture on another port, or another machine
+../.venv/bin/python dashboard.py 8790
+../.venv/bin/python dashboard.py bench.local:8765
 ```
 
 Points worth knowing:
@@ -217,8 +221,11 @@ Points worth knowing:
   the capture's for the same reason.
 - **The capture tile shows the logger's numbers** — its CSV path, row count, burst count
   and live burst state — pushed over the same connection once a second.
-- `--attach` refuses `--csv`, `--log-rate`, `--port` and friends rather than ignoring them:
-  those belong to the process that owns the board.
+- **The viewer is its own program, not a mode.** `--listen` is a genuine option on the
+  capture — it composes with every other flag and makes nothing illegal. Attaching is not:
+  it has no port, no baud, no CSV and no log rate, because those belong to whoever holds
+  the board. So it lives in `dashboard.py`, next to `view.py`, rather than as a flag that
+  quietly invalidates half the others.
 - It binds loopback by default. `--listen 0.0.0.0:8765` opens it to the network, which is
   unauthenticated — only worth doing on a network you trust.
 
@@ -384,9 +391,11 @@ bursts cannot exceed whatever the board is streaming.
 | `python/logger.py` | CSV appender, header written only for new files |
 | `python/decimator.py` | Rate limiting and burst-on-change for the CSV |
 | `python/hub.py` | Serves the live stream to attached plots (`--listen`) |
-| `python/plot.py` | Live tiled dashboard |
+| `python/pipeline.py` | The seam: a source's queue on one side, sample sinks on the other |
+| `python/plot.py` | The live tile grid itself, driven by whichever program owns it |
+| `python/main.py` | The capture: port, decimator, CSV, and optionally a plot |
+| `python/dashboard.py` | The live dashboard, attached to a capture running elsewhere |
 | `python/view.py` | Offline viewer for logged CSVs |
-| `python/main.py` | CLI entry point; wires a source to its sinks |
 
 ## Environment
 

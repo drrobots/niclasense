@@ -1,30 +1,30 @@
 #!/usr/bin/env python3
 """Log the Nicla Sense ME sensor stream to CSV and plot it live.
 
-The capture and the plot are separable. --listen makes the logger serve its samples on a
-TCP socket; --attach plots a logger that is already running. So a long capture can run
-headless for hours and you can open a plot on it, close the plot, and open another,
-without the logging ever noticing -- see hub.py for the protocol.
+This is the capture: it owns the serial port, the decimator and the CSV. It can plot what
+it is capturing, but it does not have to -- --listen serves the live stream on a TCP
+socket, and dashboard.py plots that from a separate process. So a capture can run headless
+for hours while plots come and go over it, without the logging ever noticing. See hub.py
+for the protocol.
 
 Examples:
     python main.py                                   # auto-detect port, log + plot
     python main.py --csv runs/walk.csv --window 60
     python main.py --no-plot --duration 15           # headless capture
-    python main.py --no-plot --listen                # headless logger, viewers welcome
-    python main.py --attach                          # plot that logger, then walk away
+    python main.py --no-plot --listen                # headless, plot it with dashboard.py
     python main.py --list-ports
 """
 
 import argparse
 import datetime
 import os
-import queue
 import sys
 import time
 
 from decimator import AdaptiveDecimator
 from hub import DEFAULT_ENDPOINT, SampleHub, parse_endpoint
 from logger import CsvLogger
+from pipeline import capture_status, make_drain, make_log_sink, watch_source
 from sources import (
     SerialControl,
     SerialSource,
@@ -88,147 +88,17 @@ def parse_args(argv=None):
     )
     parser.add_argument(
         "--listen", nargs="?", const=DEFAULT_ENDPOINT, default=None, metavar="HOST:PORT",
-        help="Serve the live stream to attached plots on this address (default %s). "
-             "With --no-plot this is a headless logger you can plot on demand."
+        help="Serve the live stream on this address (default %s) for dashboard.py to "
+             "plot. With --no-plot this is a headless capture you can plot on demand."
              % DEFAULT_ENDPOINT,
     )
-    parser.add_argument(
-        "--attach", nargs="?", const=DEFAULT_ENDPOINT, default=None, metavar="HOST:PORT",
-        help="Plot a logger that is already running with --listen (default %s) instead "
-             "of opening the serial port. This process does not log." % DEFAULT_ENDPOINT,
-    )
     parser.add_argument("--list-ports", action="store_true", help="List serial ports and exit.")
-    args = parser.parse_args(argv)
-
-    if args.attach:
-        # Everything about the capture belongs to the logger that owns the board. Quietly
-        # ignoring these would be worse: --csv in particular reads like it would write a
-        # second copy of the log, and it never could.
-        owned = [
-            name for name in ("port", "rate", "csv", "log_rate", "burst_on", "listen")
-            if getattr(args, name) not in (None, 0, 0.0)
-        ]
-        if args.no_plot:
-            owned.append("no_plot")
-        if owned:
-            parser.error(
-                "--attach only plots; %s belong%s to the logger you are attaching to."
-                % (", ".join("--" + n.replace("_", "-") for n in sorted(owned)),
-                   "" if len(owned) > 1 else "s")
-            )
-    return args
+    return parser.parse_args(argv)
 
 
 def default_csv_path():
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     return os.path.join("logs", "nicla_%s.csv" % stamp)
-
-
-def make_log_sink(log, decimator=None):
-    """Return a sink that writes samples to the CSV, thinned if we are decimating."""
-
-    if decimator is None:
-        return log.write
-
-    def sink(sample):
-        for kept, is_burst in decimator.feed(sample):
-            log.write(kept, is_burst)
-
-    return sink
-
-
-def make_drain(source, sinks):
-    """Return a function that moves everything queued to each sink in turn.
-
-    Sinks are plain callables taking one sample, which is what keeps the logger and the
-    plot independent of each other: the logger's sink is the CSV, the plot's is its ring
-    buffers, the hub's is every attached viewer, and no sink knows the others exist.
-
-    Only the CSV sink is ever thinned. Decimation is about the size of the file on disk,
-    not about how much the host is willing to look at, so plots -- local or attached --
-    always see every sample.
-    """
-
-    sinks = tuple(s for s in sinks if s is not None)
-
-    def drain():
-        moved = 0
-        # Bounded so a backlog can never starve the caller (the animation timer).
-        while moved < 5000:
-            try:
-                sample = source.queue.get_nowait()
-            except queue.Empty:
-                break
-            for sink in sinks:
-                sink(sample)
-            moved += 1
-        return moved
-
-    return drain
-
-
-def capture_status(source, log, decimator, csv_path, hub=None):
-    """The facts the capture tile shows, as a dict.
-
-    Named rather than inlined because the headless logger publishes exactly this dict to
-    attached viewers, so a remote plot and a local one report the same capture the same
-    way.
-    """
-    status = {
-        "source": source.describe(),
-        "csv": csv_path if log is not None else None,
-        "rows": log.rows_written if log is not None else 0,
-        "dropped": source.dropped,
-        "malformed": getattr(source, "malformed", 0),
-        "log_rate": decimator.rate if decimator is not None else 0,
-        "bursts": decimator.bursts if decimator is not None else 0,
-        "bursting": decimator.bursting if decimator is not None else False,
-    }
-    if hub is not None:
-        status["viewers"] = hub.clients
-    return status
-
-
-def attached_status(source):
-    """The logger's published status, plus what only this process can know.
-
-    Loss is counted at both ends and means different things -- the logger's rows never
-    reached the CSV, ours never reached this window -- but the tile answers one question,
-    "is what I am looking at complete", and the honest answer there is the sum. The two
-    are kept as separate keys as well, and the exit summary reports this viewer's own
-    count on its own, so which end is struggling stays recoverable.
-    """
-
-    def status():
-        published = dict(source.status)
-        capture_dropped = published.get("dropped", 0)
-        published["source"] = source.describe()
-        published["capture_dropped"] = capture_dropped
-        published["link_dropped"] = source.dropped
-        published["dropped"] = capture_dropped + source.dropped
-        published["malformed"] = published.get("malformed", 0) + source.malformed
-        return published
-
-    return status
-
-
-def watch_source(source, drain, plot):
-    """Wrap drain so a source that dies closes the plot window instead of freezing it.
-
-    run_headless() has always checked source.error on every pass; under matplotlib the
-    animation callback is the only place left to check it from.
-    """
-    import matplotlib.pyplot as plt
-
-    def guarded():
-        moved = drain()
-        if source.error is not None or not source.running:
-            reason = source.error if source.error is not None else "source stopped"
-            sys.stderr.write("\n%s\n" % reason)
-            plt.close(plot.figure)
-        return moved
-
-    return guarded
 
 
 def run_headless(source, drain, duration, hub=None, status=None):
@@ -302,11 +172,7 @@ def main(argv=None):
             print("error: %s" % exc, file=sys.stderr)
             return 1
 
-    # Attached mode plots someone else's capture: that process owns the port, the CSV and
-    # the decimator, and this one is a window onto it.
-    csv_path = "none" if args.attach else (
-        args.csv if args.csv is not None else default_csv_path()
-    )
+    csv_path = args.csv if args.csv is not None else default_csv_path()
     log = None
     if csv_path.lower() != "none":
         # Flush about once a second either way; the default of every 200 rows is 40 s
@@ -356,14 +222,11 @@ def main(argv=None):
             if log is not None:
                 log.close()
             return 1
-        print("serving samples on %s -- attach with: python main.py --attach %s"
+        print("serving samples on %s -- plot it with: python dashboard.py %s"
               % (hub.describe(), hub.describe()))
 
-    if args.attach:
-        status = attached_status(source)
-    else:
-        def status():
-            return capture_status(source, log, decimator, csv_path, hub)
+    def status():
+        return capture_status(source, log, decimator, csv_path, hub)
 
     plot = None
     if not args.no_plot:
