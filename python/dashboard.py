@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """Live dashboard for a capture that is already running.
 
-main.py owns the board and the CSV; run it with --listen and it serves every sample on a
-TCP socket. This connects to that socket and plots it, in the same tiles the all-in-one
-run uses. Close the window whenever you like -- the capture does not notice, and you can
-open another.
+main.py owns the board and the CSV and serves every sample on a TCP socket. This connects
+to that socket and plots it. Close the window whenever you like -- the capture does not
+notice, and you can open another.
 
-It is a separate program rather than a flag on main.py because it shares none of the
+It is a separate program rather than a mode of main.py because it shares none of the
 capture's settings: no port, no baud, no CSV, no log rate. Those belong to the process
-holding the board.
+holding the board. `main.py --plot` starts this for you, as a child attached over the same
+socket; there is no shorter path than that on purpose.
 
 Examples:
-    python main.py --no-plot --listen        # in one terminal: the capture
+    python main.py                           # in one terminal: the capture
     python dashboard.py                      # in another: this
     python dashboard.py 8790                 # a capture on a different port
     python dashboard.py bench.local:8765     # a capture on another machine
@@ -28,7 +28,7 @@ from sources import SourceError, StreamSource
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Plot a Nicla capture that is running elsewhere with --listen.",
+        description="Plot a Nicla capture that is running elsewhere.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(

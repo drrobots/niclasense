@@ -19,9 +19,9 @@ worth knowing, both inherited from argparse and both documented in the README:
 
 - `--burst-on` is a repeatable flag, so command-line triggers *add* to the file's list
   rather than replacing it. Leave `burst_on` out of the file to give them a clean slate.
-- The three on/off flags (`no_plot`, `no_autobaud`, `list_ports` is excluded) can be
-  turned on by the file but not back off from the command line, since there is no
-  `--plot` to counter `--no-plot` with.
+- The on/off flags (`plot`, `no_autobaud`; `list_ports` is excluded) can be turned on by
+  the file but not back off from the command line, since a store_true flag has no negative
+  form to counter it with.
 """
 
 import argparse
@@ -130,13 +130,6 @@ def _convert(action, dest, raw, path):
 
     if isinstance(action, argparse._AppendAction):
         return _list(text)
-
-    # --listen: a bare true means "yes, at the default endpoint", false means off, and
-    # anything else is the endpoint itself. Mirrors the flag, which takes an optional value.
-    if action.nargs == "?":
-        if text.lower() in _BOOLEANS:
-            return action.const if _BOOLEANS[text.lower()] else action.default
-        return text
 
     if action.type is not None:
         try:

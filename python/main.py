@@ -1,29 +1,36 @@
 #!/usr/bin/env python3
-"""Log the Nicla Sense ME sensor stream to CSV and plot it live.
+"""Log the Nicla Sense ME sensor stream to CSV and serve it over TCP.
 
-This is the capture: it owns the serial port, the decimator and the CSV. It can plot what
-it is capturing, but it does not have to -- --listen serves the live stream on a TCP
-socket, and dashboard.py plots that from a separate process. So a capture can run headless
-for hours while plots come and go over it, without the logging ever noticing. See hub.py
-for the protocol.
+This is the capture: it owns the serial port, the decimator and the CSV, and it is always
+headless. Every sample goes out on a TCP socket as well as to the file (see hub.py for the
+protocol), and drawing is somebody else's process -- dashboard.py for a window, webdash.py
+for a browser, `nc` for the raw rows.
+
+There is no in-process plot, deliberately. A window that shares this interpreter shares
+its GIL and its lifetime with the logging, which is the wrong coupling for something meant
+to run for hours: the capture is the durable thing and viewers come and go over the
+socket, here or on another machine. --plot is only a convenience for the common case of
+wanting one immediately -- it starts dashboard.py as a *child* pointed at our own socket,
+so it attaches like any other viewer and closing it leaves the capture running.
 
 Every switch is also settable from an INI file (--config); see config.py and
 example.conf. The command line still wins, so a file describes a standing setup and
 flags vary one run of it.
 
 Examples:
-    python main.py                                   # auto-detect port, log + plot
-    python main.py --csv runs/walk.csv --window 60
-    python main.py --no-plot --duration 15           # headless capture
-    python main.py --no-plot --listen                # headless, plot it with dashboard.py
+    python main.py                                   # log and serve; attach when you like
+    python main.py --plot                            # ...and open a dashboard on it now
+    python main.py --csv runs/walk.csv --duration 15
+    python main.py --listen 0.0.0.0:8790             # serve somewhere else
     python main.py --config overnight.conf           # a setup that lives in a file
-    python main.py --config overnight.conf --window 60   # ...with one thing changed
+    python main.py --config overnight.conf --log-rate 1   # ...with one thing changed
     python main.py --list-ports
 """
 
 import argparse
 import datetime
 import os
+import subprocess
 import sys
 import time
 
@@ -31,7 +38,7 @@ import config
 from decimator import AdaptiveDecimator
 from hub import DEFAULT_ENDPOINT, SampleHub, parse_endpoint
 from logger import CsvLogger
-from pipeline import capture_status, make_drain, make_log_sink, watch_source
+from pipeline import capture_status, make_drain, make_log_sink
 from sources import (
     SerialControl,
     SerialSource,
@@ -43,7 +50,7 @@ from sources import (
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        description="Stream, log, and plot Nicla Sense ME sensor data.",
+        description="Log Nicla Sense ME sensor data to CSV and serve it to viewers.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -91,18 +98,27 @@ def build_parser():
         help="Baseline time constant, seconds. Longer = slower to accept a new resting "
              "value, so sustained motion keeps triggering for longer.",
     )
-    parser.add_argument("--window", type=float, default=30.0, help="Plot window, seconds.")
-    parser.add_argument("--fps", type=float, default=20.0, help="Plot refresh rate.")
-    parser.add_argument("--no-plot", action="store_true", help="Log only, no plot window.")
     parser.add_argument(
-        "--duration", type=float, default=0.0,
-        help="Stop after this many seconds (0 = until interrupted). Headless mode only.",
+        "--plot", action="store_true",
+        help="Also start dashboard.py, attached to this capture over the socket. "
+             "Closing its window detaches it; the capture keeps going.",
     )
     parser.add_argument(
-        "--listen", nargs="?", const=DEFAULT_ENDPOINT, default=None, metavar="HOST:PORT",
-        help="Serve the live stream on this address (default %s) for dashboard.py to "
-             "plot. With --no-plot this is a headless capture you can plot on demand."
-             % DEFAULT_ENDPOINT,
+        "--window", type=float, default=30.0,
+        help="Plot window, seconds. Passed to the dashboard --plot starts.",
+    )
+    parser.add_argument(
+        "--fps", type=float, default=20.0,
+        help="Plot refresh rate. Passed to the dashboard --plot starts.",
+    )
+    parser.add_argument(
+        "--duration", type=float, default=0.0,
+        help="Stop after this many seconds (0 = until interrupted).",
+    )
+    parser.add_argument(
+        "--listen", default=DEFAULT_ENDPOINT, metavar="HOST:PORT",
+        help="Address to serve the live stream on. Serving is not optional -- it is how "
+             "anything else sees this capture -- but where is.",
     )
     parser.add_argument("--list-ports", action="store_true", help="List serial ports and exit.")
     return parser
@@ -136,6 +152,29 @@ def parse_args(argv=None):
 def default_csv_path():
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     return os.path.join("logs", "nicla_%s.csv" % stamp)
+
+
+def launch_viewer(endpoint, window, fps):
+    """Start dashboard.py against our own socket. Returns the process, or None.
+
+    A child rather than an import: matplotlib in this interpreter would put a GUI event
+    loop on the thread that has to keep draining the serial queue, which is the coupling
+    the split exists to remove. Over the socket it is an ordinary viewer that happens to
+    have been started for you, and it can be closed, reopened, or replaced by webdash.py
+    without the capture being involved.
+
+    A dashboard that will not start is reported and shrugged off. The samples are already
+    reaching the CSV and the socket by the time we get here, and killing a good capture
+    because its convenience window failed would be the wrong trade.
+    """
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.py")
+    argv = [sys.executable, script, endpoint, "--window", "%g" % window, "--fps", "%g" % fps]
+    try:
+        return subprocess.Popen(argv)
+    except OSError as exc:
+        print("warning: could not start dashboard.py (%s); the capture continues" % exc,
+              file=sys.stderr)
+        return None
 
 
 def run_headless(source, drain, duration, hub=None, status=None):
@@ -248,57 +287,51 @@ def main(argv=None):
                 file=sys.stderr,
             )
 
-    hub = None
-    if args.listen:
+    try:
         host, port = parse_endpoint(args.listen)
-        # describe() rather than a captured string: a viewer attaching after a rate change
-        # should be told what the board is doing now.
-        hub = SampleHub(host=host, port=port, banner=source.describe)
-        try:
-            hub.start()
-        except OSError as exc:
-            print("error: %s" % exc, file=sys.stderr)
-            source.stop()
-            if log is not None:
-                log.close()
-            return 1
-        print("serving samples on %s -- plot it with: python dashboard.py %s"
-              % (hub.describe(), hub.describe()))
+    except ValueError:
+        print("error: --listen %r is not a HOST:PORT" % args.listen, file=sys.stderr)
+        source.stop()
+        if log is not None:
+            log.close()
+        return 1
+    # describe() rather than a captured string: a viewer attaching after a rate change
+    # should be told what the board is doing now.
+    hub = SampleHub(host=host, port=port, banner=source.describe)
+    try:
+        hub.start()
+    except OSError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        source.stop()
+        if log is not None:
+            log.close()
+        return 1
+    print("serving samples on %s -- plot it with: python dashboard.py %s"
+          % (hub.describe(), hub.describe()))
 
     def status():
         return capture_status(source, log, decimator, csv_path, hub)
 
-    plot = None
-    if not args.no_plot:
-        from plot import LivePlot
-
-        plot = LivePlot(
-            window=args.window,
-            fps=args.fps,
-            title=source.describe(),
-            status=status,
-        )
-
     drain = make_drain(source, [
         make_log_sink(log, decimator) if log is not None else None,
-        plot.add if plot is not None else None,
-        hub.broadcast if hub is not None else None,
+        hub.broadcast,
     ])
 
+    viewer = launch_viewer(hub.describe(), args.window, args.fps) if args.plot else None
+
     try:
-        if plot is not None:
-            print("close the plot window to stop")
-            # A dead source has to end plt.show() itself: matplotlib owns the main thread
-            # from here, and without this an unplugged board or a logger that exited
-            # leaves a window quietly frozen on its last frame.
-            plot.run(drain=watch_source(source, drain, plot))
-            drain()
-        else:
-            run_headless(source, drain, args.duration, hub, status)
+        run_headless(source, drain, args.duration, hub, status)
     finally:
         source.stop()
-        if hub is not None:
-            hub.stop()
+        hub.stop()
+        if viewer is not None:
+            # The hub is already shut, so the dashboard's own source has died and it is
+            # closing its window of its own accord. Give it that moment before insisting,
+            # so the usual case exits without a signal.
+            try:
+                viewer.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                viewer.terminate()
         rows = log.rows_written if log is not None else 0
         if log is not None:
             log.close()
@@ -309,7 +342,7 @@ def main(argv=None):
             print("skipped %d malformed lines" % source.malformed)
         if source.dropped:
             print("dropped %d samples (consumer fell behind)" % source.dropped)
-        if hub is not None and hub.client_drops:
+        if hub.client_drops:
             print("dropped %d samples to viewers that fell behind" % hub.client_drops)
         if source.error is not None:
             print("source error: %s" % source.error, file=sys.stderr)

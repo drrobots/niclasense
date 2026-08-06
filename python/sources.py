@@ -588,7 +588,7 @@ class StreamSource(_ThreadedSource):
         except OSError as exc:
             raise SourceError(
                 "Could not attach to %s:%d (%s). Start a capture there with "
-                "'main.py --listen', or name a different one."
+                "'main.py', or name a different one."
                 % (self.host, self.port, exc)
             )
         sock.settimeout(self.timeout)
@@ -637,7 +637,7 @@ class StreamSource(_ThreadedSource):
 
         self.close()
         raise SourceError(
-            "%s:%d did not send a Nicla header. Is that a logger running with --listen?"
+            "%s:%d did not send a Nicla header. Is that a main.py capture?"
             % (self.host, self.port)
         )
 

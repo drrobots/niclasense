@@ -22,14 +22,19 @@ Flash the board:
 arduino-cli compile --fqbn arduino:mbed_nicla:nicla_sense nicla_stream && arduino-cli upload -p /dev/cu.usbmodemEE7B25F12 --fqbn arduino:mbed_nicla:nicla_sense nicla_stream
 ```
 
-Run the logger and live dashboard:
+Run the capture, and a dashboard with it:
 
 ```bash
-cd python && ../.venv/bin/python main.py
+cd python && ../.venv/bin/python main.py --plot
 ```
 
 The port is auto-detected by USB VID/PID, the CSV lands in `python/logs/nicla_<timestamp>.csv`,
-and the plot window scrolls the last 30 seconds. Close the window to stop.
+and the plot window scrolls the last 30 seconds. Ctrl-C in the terminal stops the capture;
+closing the window only detaches the dashboard, which is a separate process.
+
+`main.py` itself is always headless and always serves the stream on `127.0.0.1:8765`, so
+without `--plot` you get a capture you can attach to whenever you like — with
+`dashboard.py`, `webdash.py`, or `nc`. See [Capture and dashboard as separate programs](#capture-and-dashboard-as-separate-programs).
 
 **The Arduino IDE's Serial Monitor holds the port exclusively.** Close it before running, or
 you get `Resource busy`.
@@ -37,13 +42,13 @@ you get `Resource busy`.
 ## Usage
 
 ```bash
-# Headless capture, fixed duration, chosen file
-../.venv/bin/python main.py --no-plot --duration 60 --csv runs/walk.csv
+# Capture, fixed duration, chosen file
+../.venv/bin/python main.py --duration 60 --csv runs/walk.csv
 
 # Longer plot window, explicit port
-../.venv/bin/python main.py --window 60 --port /dev/cu.usbmodemEE7B25F12
+../.venv/bin/python main.py --plot --window 60 --port /dev/cu.usbmodemEE7B25F12
 
-# Plot only, no logging
+# Serve only, no logging
 ../.venv/bin/python main.py --csv none
 
 # What ports exist?
@@ -61,11 +66,11 @@ you get `Resource busy`.
 | `--no-autobaud` | off | Fail instead of trying other rates when `--baud` yields nothing |
 | `--rate` | `0` | Ask the board to stream at N Hz on connect (0 = leave it alone) |
 | `--csv` | `logs/nicla_<ts>.csv` | Output file; `none` disables logging |
-| `--window` | `30` | Plot window in seconds |
-| `--fps` | `20` | Plot refresh rate |
-| `--no-plot` | off | Log without opening a window |
-| `--duration` | `0` | Stop after N seconds (headless only; 0 = until Ctrl-C) |
-| `--listen` | off | Serve the live stream for `dashboard.py`, default `127.0.0.1:8765` |
+| `--plot` | off | Also start `dashboard.py` against this capture's socket |
+| `--window` | `30` | Plot window in seconds; passed to the dashboard `--plot` starts |
+| `--fps` | `20` | Plot refresh rate; likewise |
+| `--duration` | `0` | Stop after N seconds (0 = until Ctrl-C) |
+| `--listen` | `127.0.0.1:8765` | Address the live stream is served on. Serving is not optional; where is |
 
 ```
 # 5 Hz baseline, full 200 Hz for a second either side of any real motion
@@ -74,6 +79,19 @@ you get `Resource busy`.
 # Trigger on pressure instead, 3 s tail
 ../.venv/bin/python main.py --log-rate 1 --burst-on press_hPa:0.5 --burst-hold 3
 ```
+
+With no board to hand, `testing/replay.py` puts a logged CSV where the serial port would
+be and passes everything after the filename to `main.py`:
+
+```bash
+../.venv/bin/python testing/replay.py logs/nicla_20260803_223115.csv --plot --duration 20
+```
+
+Timing comes from the file's own `t_ms`, so a 200 Hz recording replays at 200 Hz, and it
+loops — each wrap sends `t_ms` backwards, which is what a board reset looks like to a
+viewer, so watching the tiles clear is a free test of that path. Everything downstream of
+the source is the real thing: decimator, bursts, CSV writer, socket, dashboards. The one
+piece it cannot exercise is `SerialSource` itself, which is the piece being replaced.
 
 Re-running against an existing CSV **appends** to it without repeating the header row.
 Note that `--log-rate` adds a `burst` column, so a decimated log and a full-rate one are
@@ -93,10 +111,9 @@ defaults; copy it and delete what you are not changing.
 ```
 
 ```ini
-# overnight.conf -- headless, decimated, plot it when I feel like it
+# overnight.conf -- decimated, attach a plot when I feel like it
 csv = runs/overnight.csv
-no_plot = true
-listen = true
+listen = 127.0.0.1:8765
 
 [burst]
 log_rate = 5
@@ -119,7 +136,7 @@ Two edges inherited from argparse:
   them, because it is a repeatable flag. Leave `burst_on` out of the file when you want
   a run's triggers to start from a clean slate.
 - **On/off keys can be turned on by a file but not back off from the command line**:
-  there is no `--plot` to counter a `no_plot = true`. Comment the key out instead.
+  there is no `--no-plot` to counter a `plot = true`. Comment the key out instead.
 
 `--config` is read in its own pass before the rest of the command line, and the loader is
 driven by the parser itself (`config.py` takes it as an argument), so a flag added to
@@ -218,30 +235,29 @@ staircases that read as real signal. The floors are set near each sensor's noise
 resting board looks flat while real motion still fills the tile. Traces are strided down to
 ~900 points per tile, which is more resolution than a tile can show and keeps redraws cheap.
 
-Ingest runs at the full 200 Hz regardless of the redraw rate, so plotting never throttles
-logging — the reader thread fills a queue that the animation callback drains on the main
-thread (macOS requires matplotlib to own the main thread). That is also why closing the
-window ends an all-in-one run: matplotlib owns the loop that drives the CSV. Run the
-capture with `--listen` and plot it from `dashboard.py` when you want the two to have
-separate lifetimes.
+Ingest runs at the full 200 Hz regardless of the redraw rate: the reader thread fills a
+queue that the animation callback drains on the main thread (macOS requires matplotlib to
+own the main thread). In a dashboard that is all it drains — the CSV is in another process
+entirely, which is the point of the next section.
 
 [dash]: https://github.com/arduino/ArduinoAI/tree/main/NiclaSenseME-dashboard
 
-## Headless logger, plot on demand
+## Capture and dashboard as separate programs
 
-Run all-in-one and the plot owns the process: matplotlib holds the main thread, the
-animation callback is what drains the queue into the CSV, and closing the window ends the
-capture. That is fine for a ten-minute recording and wrong for an overnight one, where you
-want to glance at the stream and walk away without taking the log down with you.
+There was once an all-in-one mode, and it had the coupling you would expect: matplotlib
+held the main thread, so the animation callback was what drained the queue into the CSV,
+and closing the window ended the capture. Fine for a ten-minute recording, wrong for an
+overnight one, where you want to glance at the stream and walk away without taking the log
+down with you.
 
-`--listen` splits them. `main.py` keeps the serial port, the decimator and the CSV, and
-publishes every sample on a TCP socket; `dashboard.py` is the same dashboard reading that
-socket instead of the board. Attach and detach as often as you like — the capture never
-sees it.
+So `main.py` is always headless and always serves. It keeps the serial port, the decimator
+and the CSV, and publishes every sample on a TCP socket; `dashboard.py` is the same
+dashboard reading that socket instead of the board. Attach and detach as often as you like
+— the capture never sees it.
 
 ```bash
 # Terminal 1: the capture. Runs until Ctrl-C.
-../.venv/bin/python main.py --no-plot --listen --log-rate 5
+../.venv/bin/python main.py --log-rate 5
 
 # Terminal 2: look at it, close the window, come back tomorrow
 ../.venv/bin/python dashboard.py
@@ -268,23 +284,26 @@ Points worth knowing:
   the capture's for the same reason.
 - **The capture tile shows the logger's numbers** — its CSV path, row count, burst count
   and live burst state — pushed over the same connection once a second.
-- **The viewer is its own program, not a mode.** `--listen` is a genuine option on the
-  capture — it composes with every other flag and makes nothing illegal. Attaching is not:
-  it has no port, no baud, no CSV and no log rate, because those belong to whoever holds
-  the board. So it lives in `dashboard.py`, next to `view.py`, rather than as a flag that
-  quietly invalidates half the others.
-- It binds loopback by default. `--listen 0.0.0.0:8765` opens it to the network, which is
+- **The viewer is its own program, not a mode.** Attaching shares none of the capture's
+  settings — no port, no baud, no CSV, no log rate — because those belong to whoever holds
+  the board. A plotting mode on `main.py` would be a flag that quietly invalidates half the
+  others, so there isn't one.
+- **`--plot` is a shortcut, not an exception to that.** It starts `dashboard.py` as a child
+  process pointed at this capture's own socket, which is why closing that window detaches a
+  viewer rather than stopping the capture, and why `--window` and `--fps` are simply passed
+  through to it. A dashboard that fails to start is a warning, not a dead capture.
+- It binds loopback. `--listen 0.0.0.0:8765` opens it to the network, which is
   unauthenticated — only worth doing on a network you trust.
 
 ## Browser dashboard
 
-`webdash.py` attaches to the same `--listen` socket and serves the dashboard as a web page
-instead of a window. It is a third viewer alongside `dashboard.py` and `view.py`, not a
-replacement for either.
+`webdash.py` attaches to the same socket and serves the dashboard as a web page instead of
+a window. It is a third viewer alongside `dashboard.py` and `view.py`, not a replacement
+for either.
 
 ```bash
 # Terminal 1: the capture, as above
-../.venv/bin/python main.py --no-plot --listen
+../.venv/bin/python main.py
 
 # Terminal 2: serve it, and open a browser at it
 ../.venv/bin/python webdash.py --open
@@ -322,11 +341,8 @@ program can change the rate — see *The dashboard does not change the board's r
 Like `--listen`, it binds loopback and there is no flag to change that. It is an
 unauthenticated live feed of whatever the board can hear.
 
-Two things worth knowing when it looks broken:
+One thing worth knowing when it looks broken:
 
-- **The capture tile stays empty under `main.py --listen` *with* a plot.** Status is
-  published from the headless path only, so the browser has nothing to show. Use
-  `--no-plot --listen`, which is the intended pairing anyway.
 - **A tab opens on the last 30 seconds, not on an empty window**, because the server keeps
   a short backlog for arrivals. Pick a 300 s window and the first five minutes fill in from
   the live stream rather than appearing at once.
@@ -494,16 +510,17 @@ bursts cannot exceed whatever the board is streaming.
 | `python/sources.py` | `SerialSource` and `StreamSource`, both threaded into a queue |
 | `python/logger.py` | CSV appender, header written only for new files |
 | `python/decimator.py` | Rate limiting and burst-on-change for the CSV |
-| `python/hub.py` | Serves the live stream to attached plots (`--listen`) |
+| `python/hub.py` | Serves the live stream to attached viewers over TCP |
 | `python/webhub.py` | Serves the same stream to browsers, over SSE, plus the page |
 | `python/pipeline.py` | The seam: a source's queue on one side, sample sinks on the other |
 | `python/tiles.py` | The tiles, palette and grid placement — declaration only, no drawing |
 | `python/plot.py` | The live tile grid itself, driven by whichever program owns it |
-| `python/main.py` | The capture: port, decimator, CSV, and optionally a plot |
+| `python/main.py` | The capture: port, decimator, CSV, socket. Headless, always |
 | `python/dashboard.py` | The live dashboard, attached to a capture running elsewhere |
 | `python/webdash.py` | The same dashboard in a browser, attached the same way |
 | `python/web/` | The browser client: page, stylesheet, drawing code, vendored uPlot |
 | `python/view.py` | Offline viewer for logged CSVs |
+| `python/testing/replay.py` | Runs a capture against a logged CSV, for when there is no board |
 
 ## Environment
 

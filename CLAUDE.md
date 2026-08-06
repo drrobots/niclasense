@@ -7,7 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Firmware for an Arduino Nicla Sense ME that streams all 27 sensor columns as CSV over a
 1 Mbaud UART, plus a Python host side that logs, plots live, serves the stream over TCP,
 and views finished logs. There is no test suite and no linter; verification is running the
-programs against the board (or against a captured CSV).
+programs against the board — or, with no board to hand, `testing/replay.py`, which swaps a
+logged CSV in for `SerialSource` and leaves the rest of the pipeline genuinely running.
 
 `README.md` is unusually complete — it documents the measured throughput ceilings, the
 sensor scale factors, the BSEC calibration behaviour, and the reasoning behind the
@@ -28,11 +29,12 @@ arduino-cli compile --fqbn arduino:mbed_nicla:nicla_sense nicla_stream && arduin
 
 | Task | Command (from `python/`) |
 |---|---|
-| Headless capture, no window | `../.venv/bin/python main.py --no-plot --duration 15` |
-| Capture serving attachable viewers | `../.venv/bin/python main.py --no-plot --listen` |
+| Capture (always headless, always serving) | `../.venv/bin/python main.py --duration 15` |
+| Capture plus a dashboard on it | `../.venv/bin/python main.py --plot` |
 | Attach a live dashboard | `../.venv/bin/python dashboard.py` |
 | Attach a browser dashboard | `../.venv/bin/python webdash.py --open` |
 | View a finished CSV | `../.venv/bin/python view.py [path-or-dir]` |
+| Run a capture with no board | `../.venv/bin/python testing/replay.py logs/<file>.csv --plot` |
 | Which ports exist | `../.venv/bin/python main.py --list-ports` |
 | Confirm firmware holds its rate | `../.venv/bin/python bench/capture.py` |
 | Encoding throughput benchmark | flash `nicla_bench`, then `../.venv/bin/python bench/runbench.py 1000000 5` |
@@ -45,7 +47,12 @@ The Arduino IDE's Serial Monitor holds the port exclusively; close it or connect
 The host side is a source → queue → sinks pipeline. `pipeline.py` is the seam and imports
 no entry point, which is what keeps `main.py` and `dashboard.py` independent of each other.
 
-- `sources.py` — `SerialSource` (the board) and `StreamSource` (a `--listen` capture) are
+- `main.py` — the capture, and never a viewer. It always serves the stream (`--listen` only
+  moves the address), and `--plot` starts `dashboard.py` as a *child process* attached over
+  that socket rather than plotting in-process. Don't reintroduce an in-process plot: it puts
+  a GUI event loop on the thread that has to keep draining the serial queue, and makes the
+  CSV's lifetime the window's.
+- `sources.py` — `SerialSource` (the board) and `StreamSource` (an attached capture) are
   interchangeable subclasses of `_ThreadedSource`; both push parsed sample tuples onto
   `source.queue` from a reader thread. `plot.py` cannot tell which it has. `SerialControl`
   sends `s`/`b`/`r`/`h` commands byte-by-byte with banner verification — the board silently
@@ -62,8 +69,8 @@ no entry point, which is what keeps `main.py` and `dashboard.py` independent of 
   the browser server can import it and serve it as JSON. Three programs draw it three
   ways; adding a tile here adds it to all three. Keep `min_span` on new tiles or a resting
   board autoscales its own quantization noise into dramatic-looking staircases.
-- `plot.py` — the live tile grid, shared by `main.py` and `dashboard.py`. Re-exports the
-  `tiles.py` constants because `view.py` has always imported them from here.
+- `plot.py` — the live tile grid, drawn by `dashboard.py` only; `main.py` does not import
+  it. Re-exports the `tiles.py` constants because `view.py` has always imported them here.
 - `webhub.py` / `webdash.py` / `web/` — the browser dashboard, attach-only like
   `dashboard.py`. Stdlib `ThreadingHTTPServer` + Server-Sent Events on `127.0.0.1`, and a
   client that draws with vendored uPlot. The server renders nothing; the page holds its own

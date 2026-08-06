@@ -488,6 +488,28 @@ class LivePlot(object):
         )
         plt.show()
 
+    def close(self):
+        """Shut the window down from code, as a dead source does.
+
+        Closing cannot happen here, because here is inside the animation callback: the
+        only thing that notices a dead source is the drain, and the drain runs from
+        _refresh. plt.close() at that point tears the animation down while matplotlib is
+        still part-way through its own _step, which then assigns to the event source it
+        has just dropped and raises AttributeError -- a traceback printed at the exact
+        moment a capture ends tidily.
+
+        So the timer is stopped (no further frames) and the close is handed to a one-shot
+        timer that fires once _step has returned. The reference is held because a timer
+        that is garbage collected never fires.
+        """
+        animation = getattr(self, "_animation", None)
+        if animation is not None and animation.event_source is not None:
+            animation.event_source.stop()
+        self._close_timer = self.figure.canvas.new_timer(interval=1)
+        self._close_timer.single_shot = True
+        self._close_timer.add_callback(lambda: plt.close(self.figure))
+        self._close_timer.start()
+
 
 def _thousands(value):
     return "{:,}".format(int(value))

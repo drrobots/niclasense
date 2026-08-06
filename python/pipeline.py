@@ -105,18 +105,21 @@ def attached_status(source):
 def watch_source(source, drain, plot):
     """Wrap drain so a source that dies closes the plot window instead of freezing it.
 
-    A headless capture checks source.error on every pass of its own loop; under matplotlib
-    there is no such loop -- plt.show() owns the thread -- so the animation callback is the
-    only place left to check it from.
+    The capture checks source.error on every pass of its own loop; under matplotlib there
+    is no such loop -- plt.show() owns the thread -- so the animation callback is the only
+    place left to check it from.
+
+    Closing goes through the plot rather than plt.close() so that this module needs no
+    matplotlib at all, and so the animation is stopped in the one place that knows it
+    exists. See LivePlot.close().
     """
-    import matplotlib.pyplot as plt
 
     def guarded():
         moved = drain()
         if source.error is not None or not source.running:
             reason = source.error if source.error is not None else "source stopped"
             sys.stderr.write("\n%s\n" % reason)
-            plt.close(plot.figure)
+            plot.close()
         return moved
 
     return guarded

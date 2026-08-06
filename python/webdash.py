@@ -2,8 +2,8 @@
 """Browser dashboard for a capture that is already running.
 
 The same job dashboard.py does, in a browser instead of a window. main.py owns the board
-and the CSV; run it with --listen and it serves every sample on a TCP socket. This attaches
-to that socket and re-serves it over HTTP, and the page it hands out draws the tiles.
+and the CSV and serves every sample on a TCP socket. This attaches to that socket and
+re-serves it over HTTP, and the page it hands out draws the tiles.
 
 Unlike the matplotlib dashboard, the window length is not a setting of this process: every
 tab keeps its own buffers and picks its own window, so two people can watch the same
@@ -13,7 +13,7 @@ Nothing goes back to the board. This attaches, reads, and draws -- there is no c
 channel, by design, exactly as with dashboard.py.
 
 Examples:
-    python main.py --no-plot --listen        # in one terminal: the capture
+    python main.py                           # in one terminal: the capture
     python webdash.py                        # in another: this, then open the URL
     python webdash.py --open                 # ... and open a browser at it
     python webdash.py 8790 --http-port 9100  # a capture elsewhere, served elsewhere
@@ -70,7 +70,7 @@ def serve(source, drain, hub, status):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Serve a browser dashboard for a Nicla capture running with --listen.",
+        description="Serve a browser dashboard for a Nicla capture running elsewhere.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
