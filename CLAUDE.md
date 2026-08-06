@@ -6,9 +6,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Firmware for an Arduino Nicla Sense ME that streams all 27 sensor columns as CSV over a
 1 Mbaud UART, plus a Python host side that logs, plots live, serves the stream over TCP,
-and views finished logs. There is no test suite and no linter; verification is running the
-programs against the board — or, with no board to hand, `testing/replay.py`, which swaps a
-logged CSV in for `SerialSource` and leaves the rest of the pipeline genuinely running.
+and views finished logs. There is no linter. Verification is `python/testing/`, a stdlib
+`unittest` suite that covers everything except the serial port itself, plus running the
+programs against the board for the part it cannot reach — or, with no board to hand,
+`testing/replay.py`, which swaps a logged CSV in for `SerialSource` and leaves the rest of
+the pipeline genuinely running. Run the suite before and after a host-side change; it is
+about forty seconds, most of it real-time replays.
+
+`ARCHITECTURE-NOTES.md` is the standing list of known weak points — the desktop dashboard
+not handling a board reset, `_refresh` cost growing with the window, `main.py`'s two
+different start-up failure paths, the autoscale rule existing in three languages. Check it
+before concluding something is a fresh bug, and add to it rather than fixing in passing.
 
 `README.md` is unusually complete — it documents the measured throughput ceilings, the
 sensor scale factors, the BSEC calibration behaviour, and the reasoning behind the
@@ -29,6 +37,8 @@ arduino-cli compile --fqbn arduino:mbed_nicla:nicla_sense nicla_stream && arduin
 
 | Task | Command (from `python/`) |
 |---|---|
+| Run the tests | `../.venv/bin/python testing/run.py` |
+| ...one module of them | `../.venv/bin/python testing/run.py decimator hub` |
 | Capture (always headless, always serving) | `../.venv/bin/python main.py --duration 15` |
 | Capture plus a dashboard on it | `../.venv/bin/python main.py --plot` |
 | Attach a live dashboard | `../.venv/bin/python dashboard.py` |
@@ -85,6 +95,14 @@ no entry point, which is what keeps `main.py` and `dashboard.py` independent of 
 - `config.py` — `--config` INI loader for `main.py`. Types are derived from the parser
   passed in, not restated, so new flags are configurable for free; precedence is
   defaults < file < command line, via `parser.set_defaults()`.
+- `testing/` — `replay.py` (the no-board harness), `run.py` (the runner), `support.py`
+  (typed sample builders, a free port, `wait_for`) and one `test_*.py` per module. Stdlib
+  `unittest` only; nothing to install. `test_schema.py` parses `nicla_stream.ino` and
+  enforces the two-sided schema rule statically, and `test_capture.py` runs `main.py`
+  end to end against a recording with a real viewer attached. Three cases are marked
+  `@unittest.expectedFailure`, recording known gaps: `plot.py`'s missing board-reset
+  handling, and an unwritable `--csv` path escaping as a traceback. Fixing one turns it
+  into an unexpected success rather than leaving it silently covered.
 
 Firmware: `nicla_stream.ino` formats a whole line into a `LineBuffer` and issues one
 `write()`, because the core's `Serial` is an mbed `UnbufferedSerial` that busy-waits per

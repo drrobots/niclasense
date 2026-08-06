@@ -1,0 +1,95 @@
+"""Shared scaffolding for the tests.
+
+Importing this first puts `python/` on the path, so a test module can `import columns` no
+matter which directory the runner was started from. `testing/replay.py` does the same
+thing for the same reason; the alternative is making `testing/` a package, which would
+mean the tests could only ever be run one way.
+
+The helpers below exist because almost every test needs the same two things: a plausible
+27-column sample, and a TCP port nobody else is using.
+"""
+
+import os
+import socket
+import sys
+
+TESTING_DIR = os.path.dirname(os.path.abspath(__file__))
+PYTHON_DIR = os.path.dirname(TESTING_DIR)
+REPO_DIR = os.path.dirname(PYTHON_DIR)
+
+if PYTHON_DIR not in sys.path:
+    sys.path.insert(0, PYTHON_DIR)
+
+from columns import COLUMNS, INTEGER_COLUMNS  # noqa: E402
+
+SKETCH = os.path.join(REPO_DIR, "nicla_stream", "nicla_stream.ino")
+
+# Column positions used often enough that looking them up per call reads worse.
+SEQ = COLUMNS.index("seq")
+T_MS = COLUMNS.index("t_ms")
+
+
+def sample(seq=0, t_ms=0, **overrides):
+    """One sample tuple, correctly typed, with named columns overridden.
+
+    Typed matters more than it looks: the integer columns really are Python ints all the
+    way through the host, and a float slipped into one of them survives every stage until
+    it reaches a CSV that reads `500.0` where the board wrote `500`, or a re-emitted wire
+    line that the far end's int() parser rejects as malformed. Building samples through
+    here rather than by hand keeps a test from proving something about data the board
+    could never have produced.
+    """
+    values = []
+    for i, name in enumerate(COLUMNS):
+        if name == "seq":
+            value = seq
+        elif name == "t_ms":
+            value = t_ms
+        else:
+            value = overrides.get(name, 0)
+        values.append(int(value) if name in INTEGER_COLUMNS else float(value))
+    unknown = set(overrides) - set(COLUMNS)
+    if unknown:
+        raise AssertionError("no such column(s): %s" % ", ".join(sorted(unknown)))
+    return tuple(values)
+
+
+def ramp(count, hz=200.0, start_seq=0, start_ms=0, **overrides):
+    """`count` samples on an even grid at `hz`, sharing one set of overrides."""
+    step = 1000.0 / hz
+    return [
+        sample(seq=start_seq + i, t_ms=int(round(start_ms + i * step)), **overrides)
+        for i in range(count)
+    ]
+
+
+def free_port():
+    """A port that was free a moment ago.
+
+    Inherently a race, but binding to 0 and asking what we got is the only way to pick one
+    without a registry, and the window is small enough that it has never mattered here.
+    The socket is closed before the port is handed out, so the caller can bind it itself.
+    """
+    probe = socket.socket()
+    try:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+    finally:
+        probe.close()
+
+
+def wait_for(predicate, timeout=5.0, interval=0.01):
+    """Poll until `predicate()` is true, returning whether it became true.
+
+    Threads and sockets make "has it happened yet" the most common question in this
+    suite, and a fixed sleep long enough to be reliable on a loaded machine is long
+    enough to make the suite tedious everywhere else.
+    """
+    import time
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return predicate()

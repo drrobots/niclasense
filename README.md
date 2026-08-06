@@ -496,6 +496,53 @@ setting.
 host that cannot carry 1 Mbaud. Combining it with `--log-rate` prints a warning, since
 bursts cannot exceed whatever the board is streaming.
 
+## Tests
+
+```bash
+cd python && ../.venv/bin/python testing/run.py
+```
+
+Stdlib `unittest`, nothing to install, about forty seconds — most of which is real time
+spent replaying recordings at the rate they were recorded at. Name modules to run a subset:
+
+```bash
+cd python && ../.venv/bin/python testing/run.py decimator hub
+```
+
+Output is buffered and shown only for tests that fail, because `test_capture.py` runs
+`main.py` for real and a capture is chatty.
+
+What the suite is for, module by module:
+
+| Module | What it pins down |
+|---|---|
+| `test_schema.py` | The two-sided schema rule, statically. Parses the sketch's header literal, `COLUMN_COUNT` and `DECIMALS`, and checks all three against `columns.py` — including that a column the board prints with zero decimals is parsed as an `int` here |
+| `test_wire.py` | The line protocol as a closed loop: a sample formatted and reparsed is the same sample, types included. Plus framing across split reads, malformed counting, banners, and endpoint parsing |
+| `test_decimator.py` | Steady rate, grid lock over a long file, retroactive pre-roll, no row written twice, a sustained tilt settling instead of latching, and a board reset restarting the grid |
+| `test_pipeline.py` | Sinks are independent and decimation reaches the file only; the drain's bound; status merging at both ends of an attached viewer |
+| `test_logger.py` | Header written once however often a file is appended to; integer columns reaching disk without a decimal point; the `burst` column only when decimating |
+| `test_hub.py` | The TCP hub over a real socket: schema and banner before data, fan-out to several viewers, status as a comment, drop-oldest backpressure, and the message a second capture on a taken port gets |
+| `test_webhub.py` | `/spec` really does carry everything `tiles.py` declares; the routes, including that traversal gets nowhere; and that SSE rows arrive batched rather than one event per sample |
+| `test_tiles.py` | The declarations three renderers trust: every series names a real column, every tile is placed, nothing overlaps the capture slot, every tile has a `min_span` |
+| `test_plot.py` | Ring buffers and the autoscale rule, in the order `web/app.js` ports it |
+| `test_view.py` | Envelope decimation keeping a 20 ms impact a stride would delete; reset stitching; tolerant loading of a torn row |
+| `test_config.py` | Precedence, unknown-key suggestions, and the two argparse edges documented above. Uses `main.build_parser()`, so a new flag is covered the day it is added |
+| `test_capture.py` | A whole capture end to end through `replay.py`, with a viewer attached over TCP, checking the CSV and the socket against the recording that went in |
+
+Three cases are marked `@unittest.expectedFailure`, recording known gaps rather than
+describing them: two in `test_plot.py` for the desktop dashboard not handling a board reset
+the way the other two viewers do, and one in `test_capture.py` for an unwritable `--csv`
+path coming out as a traceback rather than as the one-line error every other start-up
+failure gets. Fix any of them and the suite reports an unexpected success.
+
+`SerialSource` is the one part not covered — auto-detect, the auto-baud sweep, the `s<N>`
+handshake, the byte-paced command writer. That is the board, and standing in for the board
+is what `replay.py` does. Those stay verified by plugging it in.
+
+`ARCHITECTURE-NOTES.md` records the places the host side does not hold together as well as
+the rest of it does, with the measurements behind each one. The expected failures above are
+the three of them that have a test.
+
 ## Layout
 
 | File | Role |
@@ -521,6 +568,9 @@ bursts cannot exceed whatever the board is streaming.
 | `python/web/` | The browser client: page, stylesheet, drawing code, vendored uPlot |
 | `python/view.py` | Offline viewer for logged CSVs |
 | `python/testing/replay.py` | Runs a capture against a logged CSV, for when there is no board |
+| `python/testing/run.py` | Test runner: all modules, or the ones named on the command line |
+| `python/testing/support.py` | Test helpers: typed sample builders, a free port, `wait_for` |
+| `python/testing/test_*.py` | One module per thing under test; see **Tests** |
 
 ## Environment
 
