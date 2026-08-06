@@ -89,6 +89,41 @@ static uint32_t timeOrigin = 0;
 static uint32_t nextSample = 0;
 
 // ---------------------------------------------------------------------------
+// Reset reason
+// ---------------------------------------------------------------------------
+
+// The nRF52832 latches why it last reset in POWER->RESETREAS, and the value survives the
+// reset that set it. That is the whole difference between chasing a power fault and
+// chasing a firmware bug, which have nothing in common to chase: a supply dip that reboots
+// the target leaves every bit clear, the debug probe pulling nRESET sets RESETPIN, and a
+// hardfault that locks the core up sets LOCKUP.
+//
+// Read once at boot and reported in every banner, so a host watching the stream sees why
+// the board it was talking to went away. The register is write-one-to-clear and the bits
+// accumulate across resets, so it is cleared here -- left alone it eventually names every
+// cause the board has ever had at once, which is worse than useless.
+//
+// Calibrate it before trusting a reading: press the reset button, and the banner must come
+// back with RESETPIN. If a button press reports POWER instead, something in the core
+// cleared the register before setup() ran, and a clear register no longer means power.
+static uint32_t resetReason = 0;
+
+static const char *resetReasonName(uint32_t reasons) {
+  if (reasons == 0)                            return "POWER";  // power-on or brownout
+  if (reasons & POWER_RESETREAS_RESETPIN_Msk)  return "RESETPIN";
+  if (reasons & POWER_RESETREAS_LOCKUP_Msk)    return "LOCKUP";
+  if (reasons & POWER_RESETREAS_DOG_Msk)       return "WATCHDOG";
+  if (reasons & POWER_RESETREAS_SREQ_Msk)      return "SOFTWARE";
+  if (reasons & POWER_RESETREAS_OFF_Msk)       return "GPIO_WAKE";
+  return "OTHER";
+}
+
+static void readResetReason() {
+  resetReason = NRF_POWER->RESETREAS;
+  NRF_POWER->RESETREAS = 0xFFFFFFFFul;
+}
+
+// ---------------------------------------------------------------------------
 // Header
 // ---------------------------------------------------------------------------
 
@@ -102,7 +137,13 @@ void printHeader() {
   Serial.print(" baud=");
   Serial.print(serialBaud);
   Serial.print(" columns=");
-  Serial.println(COLUMN_COUNT);
+  Serial.print(COLUMN_COUNT);
+  // Why this boot happened. Decimal so a host can parse it as a number like the fields
+  // above; the name is for whoever is reading the terminal.
+  Serial.print(" reset=");
+  Serial.print(resetReason);
+  Serial.print(" reset_why=");
+  Serial.println(resetReasonName(resetReason));
   Serial.println(F("#seq,t_ms,"
                    "ax_g,ay_g,az_g,"
                    "gx_dps,gy_dps,gz_dps,"
@@ -118,6 +159,9 @@ void printHeader() {
 // ---------------------------------------------------------------------------
 
 void setup() {
+  // First, before anything else can reset it or reboot on us.
+  readResetReason();
+
   Serial.begin(serialBaud);
 
   // Standalone: no ESLOV and no BHY2 BLE handler.

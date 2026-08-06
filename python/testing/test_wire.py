@@ -162,6 +162,43 @@ class Banners(unittest.TestCase):
         self.assertEqual(source.stream_hz, None)
 
 
+class Restarts(unittest.TestCase):
+    """The sketch prints its banner at boot, so a second one means the board restarted.
+
+    Worth noticing rather than absorbing: a reboot mid-capture used to be silent -- the
+    stream carried on from t_ms 0 at the firmware's default rate with nothing said -- and
+    the banner is where the nRF52's reset reason arrives.
+    """
+
+    BOOT = ("Sonata In-Situ Sensor: nicla-stream v3 rate_hz=200 baud=1000000 "
+            "columns=27 reset=1 reset_why=RESETPIN")
+
+    def test_the_first_banner_is_not_a_restart(self):
+        source = _ThreadedSource()
+        source._consume_line("# " + self.BOOT)
+        self.assertEqual(source.reboots, 0)
+
+    def test_an_identical_banner_is_a_reprint_not_a_restart(self):
+        """`h` asks for one, and set_rate() uses it as an acknowledgement."""
+        source = _ThreadedSource()
+        source._consume_line("# " + self.BOOT)
+        source._consume_line("# " + self.BOOT)
+        self.assertEqual(source.reboots, 0)
+
+    def test_a_changed_banner_counts_as_a_restart(self):
+        source = _ThreadedSource()
+        source._consume_line("# " + self.BOOT)
+        source._consume_line("# " + self.BOOT.replace("reset=1 reset_why=RESETPIN",
+                                                      "reset=0 reset_why=POWER"))
+        self.assertEqual(source.reboots, 1)
+
+    def test_the_settings_still_parse_out_of_the_longer_banner(self):
+        source = _ThreadedSource()
+        source._consume_line("# " + self.BOOT)
+        self.assertEqual(source.stream_hz, 200)
+        self.assertEqual(source.reported_baud, 1000000)
+
+
 class Schema(unittest.TestCase):
     def test_the_matching_schema_line_is_accepted(self):
         self.assertEqual(check_schema("#" + ",".join(COLUMNS), "Board", ""), COLUMNS)

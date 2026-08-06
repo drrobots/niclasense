@@ -129,6 +129,8 @@ class _ThreadedSource(object):
         self._last_t = None
         self._rejected = 0
         self.banner = None
+        # Banners seen after the first: one per restart of whatever is upstream.
+        self.reboots = 0
         # Whatever the board last reported in its banner; None until a header arrives.
         self.stream_hz = None
         self.reported_baud = None
@@ -255,6 +257,14 @@ class _ThreadedSource(object):
 
     def _parse_banner(self, text):
         """Record a '# <banner>' line and pull the board's live settings out of it."""
+        if self.banner is not None and text != self.banner:
+            # The sketch prints this at boot, so one arriving mid-capture means the board
+            # restarted underneath us -- and until now that was silent: the stream simply
+            # carried on from t_ms 0 at whatever rate the firmware defaults to, with
+            # nothing on the terminal to say why. The banner carries reset_why, so this is
+            # where a brownout stops looking like a glitch in the plot.
+            self.reboots += 1
+            sys.stderr.write("\nboard restarted: %s\n" % text)
         self.banner = text
         for field in text.split():
             name, _, value = field.partition("=")
