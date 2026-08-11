@@ -1,0 +1,69 @@
+<!--
+  The capture, as a Windows service. Read by WinSW, which must sit beside this file under
+  the same base name (nicla-capture.exe).
+
+  python.exe rather than pythonw.exe: WinSW hands the child real pipes for stdout and
+  stderr and writes them to the log below, so the console build is the one whose output
+  survives. There is no window either way -- a service runs in session 0, where there is
+  nobody to show one to.
+
+  supervise.py rather than main.py directly: main.py exits 1 when the board is unplugged,
+  and at boot it will usually exit before the first sample because a service starts before
+  USB enumeration finishes. Restarting is therefore the normal path, and supervise.py backs
+  off rather than spinning. See its docstring for why that is not left to the SCM.
+
+  LocalSystem, which is the default and is not stated: the service needs a serial port and
+  a directory under ProgramData, and nothing else. It binds 127.0.0.1 only, so nothing here
+  is reachable off the machine and Windows Firewall has no reason to prompt.
+-->
+<service>
+  <id>NiclaCapture</id>
+  <name>Nicla Sense ME capture</name>
+  <description>Logs the Nicla Sense ME sensor stream to CSV and serves it on 127.0.0.1:8765 for the dashboard.</description>
+
+  <executable>%BASE%\..\python\python.exe</executable>
+  <arguments>"%BASE%\supervise.py" capture --config "%ProgramData%\NiclaSense\nicla.conf"</arguments>
+
+  <!--
+    ProgramData rather than the install directory, because main.py resolves a relative
+    csv path against the working directory and nicla.conf deliberately leaves csv unset so
+    that every start gets its own timestamped file. This is what decides that those land in
+    %ProgramData%\NiclaSense\logs. Program Files is not writable by a service and must not
+    become the answer by accident.
+  -->
+  <workingdirectory>%ProgramData%\NiclaSense</workingdirectory>
+
+  <startmode>Automatic</startmode>
+  <!--
+    Delayed start. Nothing breaks without it -- supervise.py retries -- but the board is
+    rarely enumerated by the time a non-delayed service starts, so the alternative is a
+    handful of failed attempts in the log of every single boot.
+  -->
+  <delayedAutoStart>true</delayedAutoStart>
+
+  <!--
+    Belt and braces over supervise.py's own loop: this covers the process being killed
+    outright, which the loop inside it cannot.
+  -->
+  <onfailure action="restart" delay="15 sec"/>
+  <resetfailure>1 hour</resetfailure>
+
+  <!--
+    Roll at 16 MB and keep eight. The capture writes a status line a second, which is about
+    50 MB a year, so this is a couple of years of history and a hard ceiling either way. The
+    CSVs have their own limits and are not these files; see retention.py.
+  -->
+  <log mode="roll-by-size">
+    <sizeThreshold>16384</sizeThreshold>
+    <keepFiles>8</keepFiles>
+  </log>
+  <logpath>%ProgramData%\NiclaSense\service</logpath>
+
+  <!--
+    Stop by signalling the tree rather than killing the parent and orphaning python.exe.
+    A capture given a moment to stop closes and flushes its CSV; one that is killed loses
+    whatever was still buffered, which at a row a minute can be several minutes of data.
+  -->
+  <stoptimeout>15 sec</stoptimeout>
+  <stopparentprocessfirst>false</stopparentprocessfirst>
+</service>

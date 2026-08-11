@@ -10,6 +10,12 @@ runs/
 # Arduino build output
 nicla_stream/build/
 
+# Windows installer build. downloads/ is fetched from python.org, PyPI and GitHub and is
+# pinned by packaging/hashes.txt rather than by being committed; dist/ is the staged tree
+# and the installer built from it.
+packaging/downloads/
+packaging/dist/
+
 # Python bytecode
 __pycache__/
 *.py[cod]
