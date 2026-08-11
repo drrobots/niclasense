@@ -63,6 +63,8 @@ you get `Resource busy`.
 | `--no-autobaud` | off | Fail instead of trying other rates when `--baud` yields nothing |
 | `--rate` | `0` | Ask the board to stream at N Hz on connect (0 = leave it alone) |
 | `--csv` | `logs/nicla_<ts>.csv` | Output file; `none` disables logging |
+| `--retain-days` | `0` | Delete logs in that directory older than N days (0 = keep everything) |
+| `--retain-gb` | `0` | Also delete the oldest while the directory is over N GB (0 = no ceiling) |
 | `--plot` | off | Also start `webdash.py` against this capture's socket, and open a browser at it |
 | `--http-port` | `8988` | Port for the dashboard `--plot` starts. Ignored without `--plot` |
 | `--duration` | `0` | Stop after N seconds (0 = until Ctrl-C) |
@@ -161,6 +163,41 @@ rows. A `r` command resetting the board's time origin resets the decimator with 
 The extra `burst` column marks which rows came from a trigger (`1`) and which sit on the
 steady grid (`0`) — necessary because rows are no longer evenly spaced. The plot still
 receives every sample regardless; decimation is about the size of the file on disk.
+
+## Retention: deleting what nobody will delete
+
+A row is about 190 bytes, so an undecimated capture writes **3.2 GB a day** and a new file
+every time the process starts. That is nobody's problem when a capture is a thing you start
+and stop; it is the whole problem when the capture is a Windows service that starts at boot
+and restarts whenever the board is replugged.
+
+`--retain-days` and `--retain-gb` bound the CSV's directory. Both are **off by default** —
+a capture you started yourself owns its own files — and the installer turns them both on.
+They answer different questions and that is why there are two. The age limit is the policy,
+the thing somebody would say out loud: keep a year. The size limit is the safety net for the
+board left somewhere that vibrates, where the steady rate stops being what fills the disk:
+
+| | rows | bytes |
+|---|---|---|
+| 1/min for 365 days | 525,600 | ~100 MB |
+| 200 Hz for 1 day, all bursts | 17,280,000 | ~3.3 GB |
+
+Hence the installed defaults: a row a minute, 365 days, and a 4 GB ceiling sized for a year
+of resting data plus a day of solid bursting. If a month of bursting happens instead, the
+ceiling is what stops it rather than the disk filling.
+
+Deletion is oldest-first by modification time rather than by the timestamp in the filename.
+They usually agree, but `--csv` makes it easy to append to a file whose name is old and
+whose contents are recent, and it is the contents that decide. The age limit runs first and
+the size limit works on what it left, so a file removed for being old is not also counted as
+having freed space. The file being written is never deleted — on Windows that would fail and
+on POSIX it would succeed silently, leaving the capture writing to an unlinked inode — but it
+does count towards the ceiling, since it is the one file guaranteed to be growing. A file
+that cannot be removed, which on Windows means anything another process has open, is
+reported and stepped over; a locked CSV is not a reason to take down a working capture.
+
+The sweep runs once at start-up and hourly thereafter. Start-up matters more than it looks:
+a service crash-looping against an absent board would otherwise never reach its first hour.
 
 ## CSV schema
 
@@ -488,6 +525,7 @@ What the suite is for, module by module:
 | `test_wire.py` | The line protocol as a closed loop: a sample formatted and reparsed is the same sample, types included. Plus framing across split reads, malformed counting, banners, and endpoint parsing |
 | `test_decimator.py` | Steady rate, grid lock over a long file, retroactive pre-roll, no row written twice, a sustained tilt settling instead of latching, and a board reset restarting the grid |
 | `test_pipeline.py` | Sinks are independent and decimation reaches the file only; the drain's bound; status merging at both ends of an attached viewer |
+| `test_retention.py` | What the sweep refuses to delete — the active file, anything inside the limits, anything that is not a CSV, everything when the limits are off — plus age running before size, and a locked file being stepped over rather than raised |
 | `test_logger.py` | Header written once however often a file is appended to; integer columns reaching disk without a decimal point; the `burst` column only when decimating |
 | `test_hub.py` | The TCP hub over a real socket: schema and banner before data, fan-out to several viewers, status as a comment, drop-oldest backpressure, and the message a second capture on a taken port gets |
 | `test_webhub.py` | `/spec` really does carry everything `tiles.py` declares; the routes, including that traversal gets nowhere; and that SSE rows arrive batched rather than one event per sample |
@@ -522,6 +560,7 @@ the rest of it does, with the measurements behind each one.
 | `python/sources.py` | `SerialSource` and `StreamSource`, both threaded into a queue |
 | `python/logger.py` | CSV appender, header written only for new files |
 | `python/decimator.py` | Rate limiting and burst-on-change for the CSV |
+| `python/retention.py` | Deletes old logs by age and total size, for captures nobody is watching |
 | `python/hub.py` | Serves the live stream to attached viewers over TCP |
 | `python/webhub.py` | Serves the same stream to browsers, over SSE, plus the page |
 | `python/pipeline.py` | The seam: a source's queue on one side, sample sinks on the other |

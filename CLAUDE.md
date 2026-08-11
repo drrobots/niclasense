@@ -71,6 +71,10 @@ no entry point, which is what keeps `main.py` and `webdash.py` independent of ea
   the CSV sink is ever decimated; attached viewers always see all 200 Hz.
 - `decimator.py` — `AdaptiveDecimator` thins the *file*, keeping a full-rate ring so a
   trigger can retroactively keep pre-trigger samples. Timing is from the board's `t_ms`.
+- `retention.py` — deletes old CSVs by age and by total size, oldest first, never the file
+  being written. Both limits default to off; only the Windows service turns them on, since
+  it is the only deployment where nobody is watching the disk. Swept once at start-up (a
+  restart loop that only swept hourly would never sweep) and hourly after.
 - `logger.py` / `hub.py` — CSV appender (header only for new files) and the TCP fan-out.
   The hub re-emits the board's own wire format, so `nc` is a valid client and the attaching
   end reuses the board parser.

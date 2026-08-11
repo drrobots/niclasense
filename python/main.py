@@ -36,6 +36,7 @@ import sys
 import time
 
 import config
+import retention
 from decimator import AdaptiveDecimator
 from hub import DEFAULT_ENDPOINT, SampleHub, parse_endpoint
 from logger import CsvLogger
@@ -99,6 +100,16 @@ def build_parser():
         "--burst-tau", type=float, default=0.5,
         help="Baseline time constant, seconds. Longer = slower to accept a new resting "
              "value, so sustained motion keeps triggering for longer.",
+    )
+    parser.add_argument(
+        "--retain-days", type=float, default=0.0, metavar="DAYS",
+        help="Delete logs in the CSV's directory older than this (0 = keep everything). "
+             "Off unless asked for: a capture you started yourself owns its own files.",
+    )
+    parser.add_argument(
+        "--retain-gb", type=float, default=0.0, metavar="GB",
+        help="Also delete the oldest logs while that directory exceeds this many GB "
+             "(0 = no ceiling). The file being written is never deleted.",
     )
     parser.add_argument(
         "--plot", action="store_true",
@@ -180,9 +191,17 @@ def launch_viewer(endpoint, http_port):
         return None
 
 
-def run_headless(source, drain, duration, hub=None, status=None):
+# How often the retention limits are re-applied while a capture runs. Hourly because the
+# thing being watched moves slowly -- an hour of full-rate bursting is 140 MB against a
+# ceiling measured in gigabytes -- and because a sweep stats every file in the directory,
+# which is not work to repeat on the drain loop's own cadence.
+SWEEP_INTERVAL = 3600.0
+
+
+def run_headless(source, drain, duration, hub=None, status=None, maintain=None):
     start = time.time()
     last_report = start
+    last_sweep = start
     total = 0
     try:
         while True:
@@ -208,6 +227,14 @@ def run_headless(source, drain, duration, hub=None, status=None):
                 )
                 sys.stderr.flush()
                 last_report = now
+            if maintain is not None and now - last_sweep >= SWEEP_INTERVAL:
+                last_sweep = now
+                result = maintain()
+                # Silence when nothing was deleted. This runs for months at a time and an
+                # hourly "nothing to do" would be the only thing in the service log.
+                if result.removed or result.failed:
+                    sys.stderr.write("\n%s\n" % result.summary())
+                    sys.stderr.flush()
             if duration and elapsed >= duration:
                 break
             time.sleep(0.02)
@@ -275,6 +302,18 @@ def main(argv=None):
                     ),
                 )
             )
+    # Once before the capture starts as well as hourly during it, because the common case
+    # for the limits being set at all is a service that has just restarted -- and a restart
+    # loop that swept only after an hour of running would never sweep at all.
+    sweeper = None
+    if log is not None and (args.retain_days > 0 or args.retain_gb > 0):
+        sweeper = retention.make_sweeper(
+            os.path.dirname(os.path.abspath(csv_path)),
+            max_age_days=args.retain_days,
+            max_bytes=int(args.retain_gb * 1024 ** 3),
+            keep=[csv_path],
+        )
+        print(sweeper().summary())
     print("reading from %s" % source.describe())
 
     source.start()
@@ -323,7 +362,7 @@ def main(argv=None):
     viewer = launch_viewer(hub.describe(), args.http_port) if args.plot else None
 
     try:
-        run_headless(source, drain, args.duration, hub, status)
+        run_headless(source, drain, args.duration, hub, status, maintain=sweeper)
     finally:
         source.stop()
         hub.stop()
