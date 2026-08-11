@@ -5,9 +5,9 @@
 # here rather than on somebody's machine.
 #
 # The suite runs first, on both platforms. Windows is where the project is deployed and
-# macOS is where it is written, and the differences that matter -- path separators, the
-# retention sweep's file locking, subprocess spawning in test_capture.py -- only show up if
-# both are run.
+# macOS is where it is written, and the differences that matter only show up if both are
+# run -- the first Windows run found that SO_REUSEADDR means something else there, which
+# had let a second capture silently bind a port the first was serving on.
 
 name: Windows installer
 
@@ -38,8 +38,8 @@ jobs:
     name: test (${{ matrix.os }}, ${{ matrix.why }})
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
       - run: python -m pip install -r python/requirements.txt
@@ -51,8 +51,8 @@ jobs:
     needs: test
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           # Only used to resolve the pyserial wheel; the wheel is pure Python and the
           # interpreter that unpacks it is not the one that will run it.
@@ -80,9 +80,13 @@ jobs:
         run: |
           $version = "${{ github.event.inputs.version }}"
           if (-not $version) { $version = "0.0.0-ci" }
-          $args = @("-AppVersion", $version)
-          if ("${{ steps.pins.outputs.verify }}" -eq "true") { $args += "-Verify" }
-          ./packaging/build.ps1 @args
+          # A hashtable, not an array: splatting an array passes its elements
+          # positionally, so @("-AppVersion", $version) arrived as the first two positional
+          # parameters and the build went looking for Python "-AppVersion". And not $args,
+          # which is an automatic variable in PowerShell.
+          $buildArgs = @{ AppVersion = $version }
+          if ("${{ steps.pins.outputs.verify }}" -eq "true") { $buildArgs.Verify = $true }
+          ./packaging/build.ps1 @buildArgs
 
       - name: Check the service files landed where the installer expects them
         shell: pwsh
@@ -114,7 +118,7 @@ jobs:
             (Resolve-Path packaging/service/dashboard-task.ps1), [ref]$null, [ref]$errors) | Out-Null
           if ($errors) { $errors | ForEach-Object { Write-Error $_ }; throw "dashboard-task.ps1 does not parse" }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: NiclaSense-Setup
           path: packaging/dist/*.exe
