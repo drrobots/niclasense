@@ -403,21 +403,34 @@ Python and no internet — the installer carries an embeddable interpreter with 
 unpacked into it, which is most of why the offline viewer and its matplotlib dependency
 were deleted.
 
+Every push builds one. To take the current build rather than making your own:
+
+```bash
+gh run download --name NiclaSense-Setup
+```
+
+To build it yourself — needs Windows, Inno Setup 6, and a Python on `PATH` to resolve the
+wheel:
+
 ```powershell
 .\packaging\build.ps1 -AppVersion 1.0.0
 ```
 
-Needs Windows, Inno Setup 6, and a Python on `PATH` to resolve the wheel; the GitHub Actions
-workflow does all three on `windows-latest` and uploads the result. **`packaging/README.md`
-is the detail** — the installed layout, why the capture is a service and the dashboard is a
-logon task, and what `supervise.py` is for. The short version of that last one: `main.py` is
-entitled to exit, and at boot it usually does, because a service starts before USB
-enumeration finishes.
+**`packaging/README.md` is the detail** — the installed layout, why the capture is a service
+and the dashboard is a logon task, what `supervise.py` is for, and the known limits. The
+short version of `supervise.py`: `main.py` is entitled to exit, and at boot it usually does,
+because a service starts before USB enumeration finishes.
 
 The installed configuration is where the two halves of this README meet. It logs one row a
 minute and bursts to the full 200 Hz on movement (see **Adaptive logging**), and keeps a year
 of that or 4 GB, whichever comes first (see **Retention**). Both are off by default
 everywhere else.
+
+What is verified and what is not, plainly: the installer builds on every push and the staged
+tree is made to import the app under its bundled interpreter before the compile is attempted,
+so a packaging mistake fails in CI. But nothing has yet *run* the installed thing — service
+registration, the logon task, and the board being found over a COM port are unverified until
+somebody installs it on a real Windows machine with a board attached.
 
 ## Throughput: why 200 Hz, and why 1 Mbaud
 
@@ -552,9 +565,9 @@ What the suite is for, module by module:
 | `test_pipeline.py` | Sinks are independent and decimation reaches the file only; the drain's bound; status merging at both ends of an attached viewer |
 | `test_retention.py` | What the sweep refuses to delete — the active file, anything inside the limits, anything that is not a CSV, everything when the limits are off — plus age running before size, and a locked file being stepped over rather than raised |
 | `test_logger.py` | Header written once however often a file is appended to; integer columns reaching disk without a decimal point; the `burst` column only when decimating |
-| `test_hub.py` | The TCP hub over a real socket: schema and banner before data, fan-out to several viewers, status as a comment, drop-oldest backpressure, and the message a second capture on a taken port gets |
+| `test_hub.py` | The TCP hub over a real socket: schema and banner before data, fan-out to several viewers, status as a comment, drop-oldest backpressure, and that a second capture on a taken port is refused and says so — which on Windows it was not, until CI ran there |
 | `test_webhub.py` | `/spec` really does carry everything `tiles.py` declares; the routes, including that traversal gets nowhere; and that SSE rows arrive batched rather than one event per sample |
-| `test_tiles.py` | The declarations both renderers trust: every series names a real column, every tile is placed, nothing overlaps the capture slot, every tile has a `min_span` — and that importing them drags in no renderer |
+| `test_tiles.py` | The declarations the renderer trusts and does not validate: every series names a real column, every tile is placed, nothing overlaps the capture slot, every tile has a `min_span` — and that importing them reaches nothing outside the standard library |
 | `test_config.py` | Precedence, unknown-key suggestions, and the two argparse edges documented above. Uses `main.build_parser()`, so a new flag is covered the day it is added |
 | `test_capture.py` | A whole capture end to end through `replay.py`, with a viewer attached over TCP, checking the CSV and the socket against the recording that went in |
 | `test_packaging.py` | The three parts of the Windows build that can be checked away from Windows: `supervise.py`'s restart loop, the installed `nicla.conf` parsed with `main.py`'s own parser, and what `build.ps1` stages |
@@ -571,6 +584,48 @@ is what `replay.py` does. Those stay verified by plugging it in.
 
 `ARCHITECTURE-NOTES.md` records the places the host side does not hold together as well as
 the rest of it does, with the measurements behind each one.
+
+### Continuous integration
+
+`.github/workflows/windows-installer.yml` runs on every push to `master` and on pull
+requests. It is the only place the Windows half of this project executes at all — it is
+written on a Mac — so it is as much a test as a build.
+
+| Job | What it runs |
+|---|---|
+| `test` ×3 | The suite on Windows/3.9 (the floor the code keeps to), Windows/3.12 (what the installer bundles), and macOS/3.12 (where it is written) |
+| `installer` | `build.ps1`, which fetches the runtime, stages the tree, imports the app under the bundled interpreter, and compiles the setup |
+
+The installer lands as a run artifact, so the current build is always a download away:
+
+```bash
+gh run download --name NiclaSense-Setup
+```
+
+3.9 is only on Windows because the macOS runners are arm64 and `setup-python` has no 3.9
+build for them.
+
+**It earned its keep on the first run.** `SO_REUSEADDR` does not mean the same thing on both
+platforms. On Unix it means "rebind a port still in `TIME_WAIT` from a previous process",
+which a capture restarted immediately after being stopped needs, and it does not let two
+live sockets hold one port. On Windows it means nearly the opposite: a second socket may
+bind an address another is *actively listening on*, and which of them a connection reaches
+is unspecified. So a second capture on Windows would not have exited with "another logger is
+probably already running" — it would have started silently and taken an arbitrary share of
+the viewers, and the same for a second dashboard. Three tests said so the first time they
+ran on Windows, and nothing on a Mac could have. `hub.REUSE_ADDR` now sets the flag only
+where it means what this project wants; the Windows default is already the wanted behaviour.
+
+The same run failed a test that was measuring the runner rather than the code — SSE batching
+fed at a paced 5 ms and read for a fixed 1.6 s, where a loaded runner delivered 51 rows of
+200. A longer timeout would not have fixed it: once the gap between samples exceeds
+`FLUSH_INTERVAL`, every sample honestly does get its own event and the assertion fails from
+the other side. Timing-dependent tests in `test_webhub.py` now read until they have what they
+are waiting for.
+
+Builds warn that they cannot verify their downloads until `packaging/hashes.txt` exists; run
+`build.ps1 -Record` once from a build you trust, commit it, and CI switches to `-Verify` on
+its own.
 
 ## Layout
 
@@ -604,13 +659,17 @@ the rest of it does, with the measurements behind each one.
 | `packaging/service/supervise.py` | Restarts the capture, and gives pythonw's null streams somewhere to go |
 | `packaging/service/nicla-capture.xml` | WinSW's service definition |
 | `packaging/service/dashboard-task.ps1` | Registers the logon task that starts the dashboard |
+| `.github/workflows/windows-installer.yml` | Runs the suite on three interpreters, then builds the installer |
 
 ## Environment
 
 - Board: Arduino Nicla Sense ME, FQBN `arduino:mbed_nicla:nicla_sense`
 - Core `arduino:mbed_nicla` 4.6.0, library `Arduino_BHY2` 1.0.8
-- Python 3.9 in `.venv` — the code stays 3.9-compatible
+- The code stays 3.9-compatible, whatever the checked-in `.venv` happens to be — hence
+  `class X(object)`, `%` formatting, no walrus and no `match`. CI runs the suite on 3.9,
+  so the convention is now enforced rather than merely stated
 - `pyserial` 3.5 — the only dependency; everything else is the standard library
+- The installer bundles CPython 3.12 (embeddable) rather than the developer's interpreter
 
 Recreate the environment with:
 

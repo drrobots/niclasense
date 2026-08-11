@@ -8,8 +8,15 @@ deleted.
 
 ## Building
 
-Needs Windows, PowerShell, a Python on `PATH` (only to resolve the pyserial wheel), and
-[Inno Setup 6](https://jrsoftware.org/isinfo.php).
+Every push to `master` builds one in CI and attaches it to the run, so building by hand is
+only for changing the packaging itself:
+
+```bash
+gh run download --name NiclaSense-Setup
+```
+
+To build locally: needs Windows, PowerShell, a Python on `PATH` (only to resolve the pyserial
+wheel), and [Inno Setup 6](https://jrsoftware.org/isinfo.php).
 
 ```powershell
 winget install JRSoftware.InnoSetup
@@ -113,6 +120,10 @@ first.
 - **Two users logged on at once means two dashboards**, and the second cannot bind port 8988.
   It logs the clash and gives up; the first is unaffected. Correct behaviour for a
   single-port loopback server, but it is a surprise if you go looking for the second one.
+  This depends on `hub.REUSE_ADDR`, which deliberately does not set `SO_REUSEADDR` on
+  Windows — with it set, Windows lets the second dashboard bind the port the first is
+  serving on and splits connections between them unpredictably. It was that way until the
+  first CI run on Windows caught it.
 - **The capture takes the serial port exclusively.** Running `main.py` by hand against the
   same board while the service is running will fail with `Resource busy` — stop the service
   first, or attach a second dashboard to the running one, which is what the socket is for.
