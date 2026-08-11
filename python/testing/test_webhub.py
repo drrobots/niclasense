@@ -115,6 +115,38 @@ class ServerFixture(unittest.TestCase):
             buffer += chunk
         return buffer
 
+    def read_until(self, sock, enough, timeout=20.0):
+        """Read until `enough(buffer)`, or give up after `timeout` and return what came.
+
+        The difference from read_for is what the number means. A fixed duration asserts
+        something about the machine -- that it can produce and deliver N rows in 1.6
+        seconds -- and a shared CI runner cannot be relied on for that; the first Windows
+        and macOS runs of this suite failed here, having managed 51 rows where the test
+        wanted 150. A generous timeout with a predicate asserts something about the code
+        instead, and costs nothing extra when the machine is quick, which is the only time
+        the duration form was actually passing on purpose.
+        """
+        import time
+
+        sock.settimeout(0.2)
+        deadline = time.time() + timeout
+        buffer = b""
+        while time.time() < deadline and not enough(buffer):
+            try:
+                chunk = sock.recv(65536)
+            except socket.timeout:
+                continue
+            if not chunk:
+                break
+            buffer += chunk
+        return buffer
+
+    def rows_in(self, count):
+        return lambda buffer: buffer.count(b"data: ") >= count
+
+    def contains(self, marker):
+        return lambda buffer: marker in buffer
+
 
 class Routes(ServerFixture):
     def test_the_page_is_served_at_both_of_its_names(self):
@@ -160,7 +192,7 @@ class Stream(ServerFixture):
         for one in support.ramp(500, ax_g=0.5):
             self.hub.broadcast(one)
         sock, rest = self.open_stream()
-        body = rest + self.read_for(sock, 1.0)
+        body = rest + self.read_until(sock, self.rows_in(500))
         self.assertEqual(body.count(b"data: "), 500)
 
     def test_the_backlog_is_capped(self):
@@ -172,40 +204,44 @@ class Stream(ServerFixture):
 
     def test_rows_arrive_batched_rather_than_one_event_each(self):
         """The reason for FLUSH_INTERVAL: at 200 Hz a per-sample event would give the
-        browser two hundred callbacks a second for a dashboard that redraws twenty times."""
+        browser two hundred callbacks a second for a dashboard that redraws twenty times.
+
+        The feed used to be paced with a 5 ms sleep, to imitate a board at 200 Hz over a
+        second. That made the test a statement about the machine as much as about the code,
+        and it failed on the first CI run it ever saw: a loaded runner stretched each 5 ms
+        sleep to about 30, so only 51 rows were fed inside the window. Worse, it would have
+        failed in the other direction too -- once the gap between samples exceeds
+        FLUSH_INTERVAL, every sample honestly does get its own event, and the ratio this
+        asserts would be measuring the runner's scheduler rather than the batching.
+
+        So the rows go in as fast as they will go. That is also closer to the truth than the
+        even pacing was: the CMSIS-DAP bridge buffers, so samples reach the host in bunches
+        (see the README on adaptive logging), and coalescing a bunch into one event is
+        exactly the property being claimed.
+        """
         sock, rest = self.open_stream()
-        self.read_for(sock, 0.2)
+        fed = 200
+        for i in range(fed):
+            self.hub.broadcast(support.sample(seq=i, t_ms=i * 5))
 
-        import threading
-        import time
-
-        def feed():
-            for i in range(200):
-                self.hub.broadcast(support.sample(seq=i, t_ms=i * 5))
-                time.sleep(0.005)
-
-        thread = threading.Thread(target=feed)
-        thread.start()
-        body = rest + self.read_for(sock, 1.6)
-        thread.join()
-
+        body = rest + self.read_until(sock, self.rows_in(fed))
         rows = body.count(b"data: ")
         events = body.count(b"\n\n")
-        self.assertGreaterEqual(rows, 150)
+        self.assertEqual(rows, fed)
         self.assertLess(events, rows / 3, "%d events for %d rows" % (events, rows))
 
     def test_no_event_exceeds_the_batch_limit(self):
         for one in support.ramp(PRIME_ROWS):
             self.hub.broadcast(one)
         sock, rest = self.open_stream()
-        body = (rest + self.read_for(sock, 1.5)).decode("ascii")
+        body = (rest + self.read_until(sock, self.rows_in(PRIME_ROWS))).decode("ascii")
         for block in body.split("\n\n"):
             self.assertLessEqual(block.count("data: "), MAX_BATCH)
 
     def test_status_arrives_as_a_named_event(self):
         sock, rest = self.open_stream()
         self.hub.push_status({"rows": 41231, "csv": "logs/x.csv"})
-        body = (rest + self.read_for(sock, 0.8)).decode("ascii")
+        body = (rest + self.read_until(sock, self.contains(b"event: status"))).decode("ascii")
         self.assertIn("event: status", body)
         self.assertIn('"rows":41231', body)
 
@@ -213,7 +249,7 @@ class Stream(ServerFixture):
         """Otherwise the capture tile sits empty for up to a second after every reload."""
         self.hub.push_status({"rows": 7})
         sock, rest = self.open_stream()
-        body = (rest + self.read_for(sock, 0.5)).decode("ascii")
+        body = (rest + self.read_until(sock, self.contains(b"event: status"))).decode("ascii")
         self.assertIn("event: status", body)
         self.assertIn('"rows":7', body)
 
@@ -221,7 +257,7 @@ class Stream(ServerFixture):
         """So an open page says the capture ended rather than freezing."""
         sock, rest = self.open_stream()
         self.hub.push_event("ended", {"reason": "stopped"})
-        body = (rest + self.read_for(sock, 0.8)).decode("ascii")
+        body = (rest + self.read_until(sock, self.contains(b"event: ended"))).decode("ascii")
         self.assertIn("event: ended", body)
 
     def test_a_closed_tab_is_forgotten(self):

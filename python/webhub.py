@@ -30,7 +30,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import tiles
 from columns import COLUMNS
-from hub import CLIENT_QUEUE, format_sample
+from hub import CLIENT_QUEUE, REUSE_ADDR, format_sample
 
 DEFAULT_HTTP_PORT = 8988
 
@@ -109,6 +109,13 @@ def build_spec(sample_hz=200.0, source=""):
 class _Server(ThreadingHTTPServer):
     # Otherwise a tab left open holds its /stream thread and the process never exits.
     daemon_threads = True
+
+    # HTTPServer turns this on for the Unix meaning of SO_REUSEADDR. On Windows the flag
+    # means something else entirely and would let a second dashboard bind a port the first
+    # is already serving on; see the comment on hub.REUSE_ADDR. Without it, the second one
+    # fails to bind and says so, which is the behaviour the two-users-logged-on case in
+    # packaging/README.md describes.
+    allow_reuse_address = REUSE_ADDR
 
     def server_bind(self):
         """Bind without asking the resolver who we are.

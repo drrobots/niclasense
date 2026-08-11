@@ -16,6 +16,7 @@ full queue drops the oldest row rather than waiting.
 """
 
 import json
+import os
 import queue
 import socket
 import threading
@@ -28,6 +29,22 @@ from columns import COLUMNS
 CLIENT_QUEUE = 2000
 
 DEFAULT_ENDPOINT = "127.0.0.1:8765"
+
+# SO_REUSEADDR does not mean the same thing on both platforms, and taking the Unix meaning
+# to Windows breaks the guarantee this module is built on.
+#
+# On Unix it means "rebind a port still in TIME_WAIT from a previous process", which is
+# what a capture restarted immediately after being stopped needs, and it does not let two
+# live sockets hold the same port. On Windows it means very nearly the opposite: a second
+# socket may bind an address another socket is actively listening on, and which of them a
+# connection reaches is unspecified. A second capture would therefore start silently on
+# Windows and steal an arbitrary half of the viewers, instead of exiting with the message
+# that says another logger already has the port. CI caught this the first time the suite
+# ran on Windows; nothing on a Mac could have.
+#
+# The Windows behaviour that matters -- not being blocked by our own TIME_WAIT -- is what
+# Windows does by default, so the correct setting there is simply not to set it.
+REUSE_ADDR = os.name != "nt"
 
 
 def parse_endpoint(text, default=DEFAULT_ENDPOINT):
@@ -111,7 +128,8 @@ class SampleHub(object):
 
     def start(self):
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if REUSE_ADDR:
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             server.bind((self.host, self.port))
         except OSError as exc:
