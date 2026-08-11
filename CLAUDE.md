@@ -51,6 +51,12 @@ arduino-cli compile --fqbn arduino:mbed_nicla:nicla_sense nicla_stream && arduin
 The Arduino IDE's Serial Monitor holds the port exclusively; close it or connects fail with
 `Resource busy`.
 
+`packaging/` builds the Windows installer and cannot be run from here at all — it needs
+Windows, PowerShell and Inno Setup. It is exercised by `.github/workflows/windows-installer.yml`
+on `windows-latest`, which is the only place the Windows half of this project runs. What
+*can* be checked from a Mac is in `testing/test_packaging.py`; run it after touching anything
+under `packaging/`.
+
 ## Architecture
 
 The host side is a source → queue → sinks pipeline. `pipeline.py` is the seam and imports
@@ -93,6 +99,12 @@ no entry point, which is what keeps `main.py` and `webdash.py` independent of ea
   12%. It is the only implementation of that rule now; `view.py` had a second one. Rows go
   out in ~20 Hz batches, not per sample.
 - `columns.py` — the schema, and the only place column order lives on the host.
+- `packaging/` — the Windows installer: an embeddable interpreter plus pyserial, the capture
+  registered as a WinSW service, the dashboard as a hidden logon task. `service/supervise.py`
+  is the only logic, and it is there for two Windows facts rather than for anything the app
+  got wrong — `main.py` exits when the board is absent, which at boot is the normal first
+  outcome; and `pythonw.exe` leaves `sys.stderr` as None, which the first status line would
+  raise on. Nothing in `python/` may grow a dependency on it.
 - `config.py` — `--config` INI loader for `main.py`. Types are derived from the parser
   passed in, not restated, so new flags are configurable for free; precedence is
   defaults < file < command line, via `parser.set_defaults()`.

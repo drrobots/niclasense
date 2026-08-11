@@ -1,0 +1,121 @@
+# Builds the Windows installer, and is the only place the Windows half of this project is
+# actually exercised -- development happens on a Mac, where nothing below can be run. The
+# job is therefore as much a test as a build: the staged tree has to import the app under
+# the embeddable interpreter before the compile is attempted, so a packaging mistake fails
+# here rather than on somebody's machine.
+#
+# The suite runs first, on both platforms. Windows is where the project is deployed and
+# macOS is where it is written, and the differences that matter -- path separators, the
+# retention sweep's file locking, subprocess spawning in test_capture.py -- only show up if
+# both are run.
+
+name: Windows installer
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to stamp the installer with"
+        default: "0.0.0-dev"
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The floor the project keeps to. Not on macos-latest: those runners are arm64
+          # and setup-python has no 3.9 build for them, which would fail the job for a
+          # reason that has nothing to do with the code.
+          - { os: windows-latest, python: "3.9",  why: "the 3.9 floor" }
+          # What the installer bundles, on the platform it is bundled for.
+          - { os: windows-latest, python: "3.12", why: "the bundled interpreter" }
+          # Where the project is written.
+          - { os: macos-latest,   python: "3.12", why: "the development platform" }
+    name: test (${{ matrix.os }}, ${{ matrix.why }})
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -r python/requirements.txt
+      - name: Run the suite
+        working-directory: python
+        run: python testing/run.py
+
+  installer:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # Only used to resolve the pyserial wheel; the wheel is pure Python and the
+          # interpreter that unpacks it is not the one that will run it.
+          python-version: "3.12"
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Decide whether the downloads can be verified
+        id: pins
+        shell: pwsh
+        run: |
+          # -Verify only works once somebody has run -Record from a build they trusted and
+          # committed the result. Until then the build still runs, and says that it did not
+          # check -- which is better than a workflow that cannot run at all, and louder than
+          # a flag silently defaulting to off.
+          $have = Test-Path packaging/hashes.txt
+          "verify=$($have.ToString().ToLower())" >> $env:GITHUB_OUTPUT
+          if (-not $have) {
+            Write-Warning "packaging/hashes.txt is absent: build inputs will not be verified. Run build.ps1 -Record and commit it."
+          }
+
+      - name: Build
+        shell: pwsh
+        run: |
+          $version = "${{ github.event.inputs.version }}"
+          if (-not $version) { $version = "0.0.0-ci" }
+          $args = @("-AppVersion", $version)
+          if ("${{ steps.pins.outputs.verify }}" -eq "true") { $args += "-Verify" }
+          ./packaging/build.ps1 @args
+
+      - name: Check the service files landed where the installer expects them
+        shell: pwsh
+        run: |
+          # Cheap, and it catches the one class of mistake the staging smoke test cannot:
+          # WinSW takes its configuration from the .xml sharing its base name, so the
+          # executable being called nicla-capture.exe is load-bearing rather than cosmetic.
+          $stage = "packaging/dist/stage"
+          foreach ($path in @(
+            "$stage/service/nicla-capture.exe",
+            "$stage/service/nicla-capture.xml",
+            "$stage/service/supervise.py",
+            "$stage/service/dashboard-task.ps1",
+            "$stage/python/pythonw.exe",
+            "$stage/app/web/app.js",
+            "$stage/nicla.conf"
+          )) {
+            if (-not (Test-Path $path)) { throw "missing from the staged tree: $path" }
+          }
+
+      - name: Check the dashboard task script is at least syntactically sound
+        shell: pwsh
+        run: |
+          # Parsing is not running -- registering a scheduled task needs a machine to
+          # register it on -- but a typo in a script that only ever executes inside an
+          # installer is otherwise found by a user watching an install fail.
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path packaging/service/dashboard-task.ps1), [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) { $errors | ForEach-Object { Write-Error $_ }; throw "dashboard-task.ps1 does not parse" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NiclaSense-Setup
+          path: packaging/dist/*.exe
+          if-no-files-found: error

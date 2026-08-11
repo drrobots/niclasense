@@ -394,6 +394,31 @@ The shape a replacement should take is a file-backed source rather than a second
 it, and feeding a finished CSV through `webdash.py` would put a log in the browser client
 that exists rather than in a drawing layer that would have to be written twice again.
 
+## Running it on Windows, unattended
+
+`packaging/` builds an installer that puts the capture on a Windows machine as a service
+that starts at boot and never stops, plus a dashboard that appears in the logged-on user's
+browser at <http://127.0.0.1:8988/>. Neither shows a window. The target machine needs no
+Python and no internet — the installer carries an embeddable interpreter with pyserial
+unpacked into it, which is most of why the offline viewer and its matplotlib dependency
+were deleted.
+
+```powershell
+.\packaging\build.ps1 -AppVersion 1.0.0
+```
+
+Needs Windows, Inno Setup 6, and a Python on `PATH` to resolve the wheel; the GitHub Actions
+workflow does all three on `windows-latest` and uploads the result. **`packaging/README.md`
+is the detail** — the installed layout, why the capture is a service and the dashboard is a
+logon task, and what `supervise.py` is for. The short version of that last one: `main.py` is
+entitled to exit, and at boot it usually does, because a service starts before USB
+enumeration finishes.
+
+The installed configuration is where the two halves of this README meet. It logs one row a
+minute and bursts to the full 200 Hz on movement (see **Adaptive logging**), and keeps a year
+of that or 4 GB, whichever comes first (see **Retention**). Both are off by default
+everywhere else.
+
 ## Throughput: why 200 Hz, and why 1 Mbaud
 
 `Serial` on this board is a **real UART**, not USB CDC — the `NICLA` variant leaves
@@ -532,6 +557,7 @@ What the suite is for, module by module:
 | `test_tiles.py` | The declarations both renderers trust: every series names a real column, every tile is placed, nothing overlaps the capture slot, every tile has a `min_span` — and that importing them drags in no renderer |
 | `test_config.py` | Precedence, unknown-key suggestions, and the two argparse edges documented above. Uses `main.build_parser()`, so a new flag is covered the day it is added |
 | `test_capture.py` | A whole capture end to end through `replay.py`, with a viewer attached over TCP, checking the CSV and the socket against the recording that went in |
+| `test_packaging.py` | The three parts of the Windows build that can be checked away from Windows: `supervise.py`'s restart loop, the installed `nicla.conf` parsed with `main.py`'s own parser, and what `build.ps1` stages |
 
 One case is marked `@unittest.expectedFailure`, recording a known gap rather than
 describing it: `test_capture.py` on an unwritable `--csv` path coming out as a traceback
@@ -572,6 +598,12 @@ the rest of it does, with the measurements behind each one.
 | `python/testing/run.py` | Test runner: all modules, or the ones named on the command line |
 | `python/testing/support.py` | Test helpers: typed sample builders, a free port, `wait_for` |
 | `python/testing/test_*.py` | One module per thing under test; see **Tests** |
+| `packaging/build.ps1` | Fetches the runtime, stages the tree, compiles the installer |
+| `packaging/nicla.iss` | The installer itself: layout, service registration, uninstall |
+| `packaging/nicla.conf` | The installed capture's settings — decimation and retention on |
+| `packaging/service/supervise.py` | Restarts the capture, and gives pythonw's null streams somewhere to go |
+| `packaging/service/nicla-capture.xml` | WinSW's service definition |
+| `packaging/service/dashboard-task.ps1` | Registers the logon task that starts the dashboard |
 
 ## Environment
 
