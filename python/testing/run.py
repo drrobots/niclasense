@@ -14,7 +14,7 @@ that fail, which is when it is worth reading. And it fixes the working directory
 suite runs the same way from `python/`, from the repo root, or from an editor.
 
 There is no dependency to install. The suite is stdlib unittest, deliberately: the project
-ships pyserial, matplotlib and numpy and nothing else, and a test runner that has to be
+ships pyserial and nothing else, and a test runner that has to be
 installed before the tests can be run is a step between a change and knowing whether it
 worked.
 """

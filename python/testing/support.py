@@ -78,6 +78,32 @@ def free_port():
         probe.close()
 
 
+def assert_imports_only_stdlib(case, module):
+    """Fail unless importing `module` reaches nothing outside the standard library.
+
+    Two modules claim to be free of third-party weight -- tiles.py, which webhub.py serves
+    to the browser as JSON, and pipeline.py, which is the seam both entry points meet at.
+    The check used to be spelled "no matplotlib", which stopped meaning anything the day
+    matplotlib left the requirements: an import of a package that is not installed cannot
+    turn up in sys.modules, so the assertion passed by absence rather than by design.
+
+    Site-packages is the discriminator rather than a list of module names. Every installed
+    dependency lands there and nothing in the standard library does, which makes this
+    independent of both the Python version and of what happens to be installed -- and it is
+    exactly the line the Windows build draws, its bundled interpreter carrying pyserial and
+    the stdlib and nothing else.
+    """
+    import subprocess
+
+    code = (
+        "import sys; import %s; "
+        "print([m.__name__ for m in list(sys.modules.values()) "
+        "if getattr(m, '__file__', None) and 'site-packages' in m.__file__])" % module
+    )
+    out = subprocess.check_output([sys.executable, "-c", code], cwd=PYTHON_DIR)
+    case.assertEqual(out.strip(), b"[]")
+
+
 def wait_for(predicate, timeout=5.0, interval=0.01):
     """Poll until `predicate()` is true, returning whether it became true.
 

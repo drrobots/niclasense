@@ -1,7 +1,8 @@
 """Data sources for the Nicla Sense ME stream.
 
 A source runs its I/O on a background thread and hands finished samples to a queue.Queue.
-That keeps the main thread free for matplotlib, which on macOS insists on owning it.
+That keeps the main thread free to poll -- originally for matplotlib, which on macOS insists
+on owning it, and now for the drain loops in main.py and webdash.py.
 
 Two of them, interchangeable to everything downstream:
 

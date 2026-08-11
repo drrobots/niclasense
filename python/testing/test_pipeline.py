@@ -189,21 +189,13 @@ class NoRenderingDependency(unittest.TestCase):
     source died -- carefully written to go through the plot object rather than pyplot so
     that this module needed no matplotlib. That went with the desktop dashboard; both
     remaining consumers poll source.error in their own loop instead. The check below is
-    what the care was protecting, stated directly.
+    what the care was protecting, stated directly -- and stated as "nothing outside the
+    stdlib" rather than "not matplotlib", which is a test that no longer has anything to
+    fail against now that matplotlib is not installed at all.
     """
 
     def test_importing_the_seam_pulls_in_no_renderer(self):
-        import subprocess
-        import sys
-
-        code = (
-            "import sys; import pipeline; "
-            "print(any(m == 'matplotlib' or m.startswith('matplotlib.') for m in sys.modules))"
-        )
-        out = subprocess.check_output(
-            [sys.executable, "-c", code], cwd=support.PYTHON_DIR
-        )
-        self.assertEqual(out.strip(), b"False")
+        support.assert_imports_only_stdlib(self, "pipeline")
 
 
 if __name__ == "__main__":

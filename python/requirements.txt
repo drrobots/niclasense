@@ -1,4 +1,1 @@
 pyserial>=3.5
-matplotlib>=3.5
-# Pulled in by matplotlib anyway; view.py uses it directly, so it is stated.
-numpy>=1.22

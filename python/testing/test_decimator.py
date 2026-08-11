@@ -138,7 +138,7 @@ class Bursts(unittest.TestCase):
 
         These two paths both write from the same history and only the seq guard keeps
         them apart; a duplicated row would give the log two samples with one timestamp,
-        which view.py would draw as a vertical line.
+        which anything drawing the file would render as a vertical line.
         """
         decimator = AdaptiveDecimator(rate=20.0, hold=0.5, pre_roll=0.25)
         written = run(decimator, self.quiet_then_shake(quiet=200, shake=300))

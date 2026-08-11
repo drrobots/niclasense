@@ -5,8 +5,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 Firmware for an Arduino Nicla Sense ME that streams all 27 sensor columns as CSV over a
-1 Mbaud UART, plus a Python host side that logs, serves the stream over TCP, draws it in a
-browser, and views finished logs. There is no linter. Verification is `python/testing/`, a stdlib
+1 Mbaud UART, plus a Python host side that logs, serves the stream over TCP, and draws it in
+a browser. `pyserial` is the only dependency; everything else is the standard library, which
+is what makes the bundled Windows interpreter small. There is no linter. Verification is `python/testing/`, a stdlib
 `unittest` suite that covers everything except the serial port itself, plus running the
 programs against the board for the part it cannot reach — or, with no board to hand,
 `testing/replay.py`, which swaps a logged CSV in for `SerialSource` and leaves the rest of
@@ -42,7 +43,6 @@ arduino-cli compile --fqbn arduino:mbed_nicla:nicla_sense nicla_stream && arduin
 | Capture (always headless, always serving) | `../.venv/bin/python main.py --duration 15` |
 | Capture plus a dashboard on it | `../.venv/bin/python main.py --plot` |
 | Attach a dashboard to a running capture | `../.venv/bin/python webdash.py --open` |
-| View a finished CSV | `../.venv/bin/python view.py [path-or-dir]` |
 | Run a capture with no board | `../.venv/bin/python testing/replay.py logs/<file>.csv --plot` |
 | Which ports exist | `../.venv/bin/python main.py --list-ports` |
 | Confirm firmware holds its rate | `../.venv/bin/python bench/capture.py` |
@@ -75,7 +75,7 @@ no entry point, which is what keeps `main.py` and `webdash.py` independent of ea
   The hub re-emits the board's own wire format, so `nc` is a valid client and the attaching
   end reuses the board parser.
 - `tiles.py` — the widget declarations. `TILES`, `PLACEMENT` on a 12-column grid, the
-  palette, `BSEC_*`, `MAX_POINTS`, the window bounds. No matplotlib and no rendering, so
+  palette, `BSEC_*`, `MAX_POINTS`, the window bounds. No renderer and no rendering, so
   the browser server can import it and serve it as JSON — a test enforces that. Both
   renderers read it; adding a tile here adds it to the live dashboard and the offline
   viewer at once. Keep `min_span` on new tiles or a resting board autoscales its own
@@ -86,11 +86,8 @@ no entry point, which is what keeps `main.py` and `webdash.py` independent of ea
   page holds its own buffers, so every tab has its own window length and theme. `/spec`
   serves `tiles.py`, so the layout is never restated in JavaScript. The autoscale order in
   `app.js` matters — min/max over the *undecimated* window, widen to `min_span`, then pad
-  12%; `view.py` applies the same rule to a finished file and the two should agree. Rows go
+  12%. It is the only implementation of that rule now; `view.py` had a second one. Rows go
   out in ~20 Hz batches, not per sample.
-- `view.py` — offline viewer, and the only matplotlib program left. Min/max envelope
-  decimation (not striding, which deletes short impacts), plus tolerant loading of torn
-  final rows and mid-capture board resets. Takes its tile constants from `tiles.py`.
 - `columns.py` — the schema, and the only place column order lives on the host.
 - `config.py` — `--config` INI loader for `main.py`. Types are derived from the parser
   passed in, not restated, so new flags are configurable for free; precedence is

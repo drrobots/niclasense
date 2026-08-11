@@ -1,8 +1,8 @@
 """The CSV writer, which is the only part of a capture that outlives the process.
 
 Two behaviours are worth holding still. Appending has to genuinely append -- a second
-header row halfway down a file is not something view.py's tolerant loader should have to
-cope with, and it would silently become a "malformed row" it skipped. And the integer
+header row halfway down a file is not something a reader should have to cope with, and any
+tolerant loader would silently skip it as a "malformed row". And the integer
 columns have to reach the file as integers: the whole chain from the sketch's DECIMALS
 table through columns.PARSERS exists to keep gas_ohm reading 98765 rather than 98765.0,
 and this is the last place that can be checked without a board.

@@ -54,8 +54,9 @@ reformats rows, which is the whole reason it is smoother.
 
 Two things outlived them and are worth knowing. `tiles.py` was extracted so the
 declarations were not inside the renderer, and that is what made the removal a
-five-file change rather than a rewrite — `view.py` now imports its constants from there
-directly. And `pipeline.py`'s `watch_source` went with `dashboard.py`: it existed only to
+five-file change rather than a rewrite — `view.py` imported its constants from there
+directly afterwards, and when `view.py` in turn was deleted the layout stayed where it was.
+And `pipeline.py`'s `watch_source` went with `dashboard.py`: it existed only to
 close a matplotlib window when the source died, carefully routed through the plot object
 so that the seam needed no matplotlib. Both remaining consumers poll `source.error` in
 their own loop. A test now asserts that importing either `pipeline` or `tiles` pulls in no
@@ -82,19 +83,24 @@ handled each repeat `source.stop()` and `log.close()` by hand before returning 1
 would mean a fourth copy. An `ExitStack` around the resources would remove the class of
 mistake rather than this instance of it.
 
-## 2. The autoscale rule lives in two languages
+## 2. Resolved: the autoscale rule lived in two languages
 
-Pulling the declarations out into `tiles.py` worked, and the suite checks that both
-renderers can trust them. But the rule that *consumes* those declarations — min/max over
-the undecimated window, widen about the midpoint to `min_span`, then pad 12% — is
-implemented twice: `view.py:_draw_traces` and `app.js`. They are held in step by a comment
-in each saying the order matters.
+The rule that *consumes* the tile declarations — min/max over the undecimated window, widen
+about the midpoint to `min_span`, then pad 12% — used to be implemented three times, then
+twice: `view.py:_draw_traces` and `app.js`, held in step by nothing stronger than a comment
+in each saying the order matters. The finding recorded that one of the two was JavaScript,
+so the honest options were to accept the duplication and test it, or to move the rule to the
+server and have the browser ask for limits it could compute itself.
 
-It was three before the desktop dashboard went, so this is better than it was, and it is
-as good as it gets cheaply: one of the two is JavaScript, so the honest options are to
-accept the duplication and test it, or to move the rule to the server and have the browser
-ask for limits it could compute itself. Worth stating plainly so the next person does not
-assume `tiles.py` already solved this.
+Neither is what happened. `view.py` was deleted when the project was packaged for Windows —
+it was the only consumer of matplotlib and numpy, which are most of the weight of a bundled
+interpreter, and it ran on the developer's machine rather than on the box doing the
+capturing. The rule now exists once, in `app.js`, which is where the only renderer is.
+
+Kept rather than deleted because the duplication is the sort that comes back: a second
+renderer is the obvious way to add offline viewing, and the note is the argument for making
+that a file-backed *source* feeding the client that exists instead. The number is kept for
+the same reason the section is.
 
 ## 3. Attached-viewer counts only decay when data flows
 
@@ -132,15 +138,15 @@ The `isinstance(source, SerialSource)` guard is correct: there is no board to as
 replay run with `--rate 50` gets no acknowledgement in either direction, and the flag reads
 as though it did something. One line on stderr would settle it.
 
-## 6. Two memory ceilings worth knowing before they are hit
+## 6. A memory ceiling worth knowing before it is hit
 
-`view.py` loads a whole file into memory, and drops to a pure-Python reader for any file
-containing one bad row — which is every file from a capture ended with Ctrl-C. A multi-hour
-200 Hz log is 100 MB+ of CSV, and the tolerant path is substantially slower than
-`np.loadtxt`. `testing/replay.py` has the same shape, and says so in its docstring.
+`testing/replay.py` loads a whole file into memory, and says so in its docstring. A
+multi-hour 200 Hz log is 100 MB+ of CSV, so a replay of one costs that much resident.
 
-Neither is wrong for the sizes this project actually produces. Both would need rethinking
-before an overnight capture could be browsed comfortably.
+This was two findings until `view.py` went; that one loaded a whole file too, and dropped to
+a slow pure-Python reader for any file containing one bad row — which is every file from a
+capture ended with Ctrl-C. What remains is not wrong for the sizes replay is actually
+pointed at, which are recordings made for tests rather than overnight captures.
 
 ## 7. `config.py` depends on a private argparse API
 

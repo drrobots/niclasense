@@ -53,9 +53,6 @@ you get `Resource busy`.
 
 # What ports exist?
 ../.venv/bin/python main.py --list-ports
-
-# Look at what you just captured
-../.venv/bin/python view.py
 ```
 
 | Flag | Default | Meaning |
@@ -339,45 +336,26 @@ Points worth knowing:
 
 ## Viewing a log
 
-`view.py` opens a finished CSV in the same tiles, the same palette, and the same 12-column
-grid as the live dashboard, so a recording reads like the stream it came from. What changes
-is the time axis: a fixed span you scrub and zoom instead of a window sliding under the
-newest sample.
+There is no offline viewer any more. `view.py` drew a finished CSV into a matplotlib figure
+in the same tiles as the live dashboard, and it was removed when the project was packaged
+for Windows: it was the only thing that needed matplotlib and numpy, which between them are
+some fifty megabytes of the bundled interpreter, for a program that runs on the developer's
+machine rather than on the box doing the capturing. The trade was deliberate and it is a
+real loss — a finished capture is now a CSV like any other, for pandas or a spreadsheet or
+whatever else reads one.
 
-```bash
-# Newest file under logs/
-../.venv/bin/python view.py
+What went with it is worth knowing, because it is what an offline viewer has to do again if
+one comes back. Traces were min/max decimated rather than strided, so that a 20 ms impact in
+a ten-minute file still drew as a spike; a plain stride at that ratio deletes it almost every
+time. The loader was tolerant of two things a live reader never sees: a torn last row, from a
+capture killed mid-write, and a board reset mid-capture, which restarts `t_ms` at zero and
+would otherwise fold the rest of the file onto its beginning. The browser client still
+handles the reset — see `app.js` — because a capture can outlive a reboot of the board.
 
-# A specific file, or the newest in a directory
-../.venv/bin/python view.py ../logs/nicla_20260805_231541.csv
-../.venv/bin/python view.py runs/
-
-# Drive the scrub strip off the gyro instead of accelerometer magnitude
-../.venv/bin/python view.py --overview gz_dps
-```
-
-- **Overview strip** (bottom) — the whole file at a glance, accelerometer magnitude by
-  default. Drag to select a range; every tile redraws to it. Burst regions are shaded,
-  since they are where the logger decided something was happening and therefore the
-  obvious places to zoom into.
-- **Cursor** — move the mouse across any tile. The values beside each title are the row
-  under the cursor, not the last row of the file, and the header shows both the offset
-  into the file and the wall-clock time there.
-- **Keys** — arrows pan, `+`/`-` zoom, `r` resets to the whole file.
-- **File tile** — duration, mean rate, row count, burst count, capture start, and the
-  range currently in view, in the slot the live dashboard uses for capture status.
-
-Traces are min/max decimated rather than strided: each drawn bucket keeps its extremes, so
-a 20 ms impact in a 10-minute file still shows up as a spike. A plain stride at that ratio
-deletes it almost every time. Single-value tiles print the min and max over the visible
-range under the trace, because the cursor readout is one instant and the spread is usually
-the story when zoomed out.
-
-Two things the loader handles quietly: a torn last row (from a capture killed mid-write)
-is skipped with a note rather than failing the file, and a board reset mid-capture — which
-restarts `t_ms` at zero and would otherwise fold the rest of the file onto the beginning —
-is stitched into one monotonic timeline, also with a note. The seam is one sample interval
-wide; the log does not record how long the board was away.
+The shape a replacement should take is a file-backed source rather than a second renderer:
+`sources.py` already defines the interface, `testing/replay.py` already implements most of
+it, and feeding a finished CSV through `webdash.py` would put a log in the browser client
+that exists rather than in a drawing layer that would have to be written twice again.
 
 ## Throughput: why 200 Hz, and why 1 Mbaud
 
@@ -514,7 +492,6 @@ What the suite is for, module by module:
 | `test_hub.py` | The TCP hub over a real socket: schema and banner before data, fan-out to several viewers, status as a comment, drop-oldest backpressure, and the message a second capture on a taken port gets |
 | `test_webhub.py` | `/spec` really does carry everything `tiles.py` declares; the routes, including that traversal gets nowhere; and that SSE rows arrive batched rather than one event per sample |
 | `test_tiles.py` | The declarations both renderers trust: every series names a real column, every tile is placed, nothing overlaps the capture slot, every tile has a `min_span` — and that importing them drags in no renderer |
-| `test_view.py` | Envelope decimation keeping a 20 ms impact a stride would delete; reset stitching; tolerant loading of a torn row |
 | `test_config.py` | Precedence, unknown-key suggestions, and the two argparse edges documented above. Uses `main.build_parser()`, so a new flag is covered the day it is added |
 | `test_capture.py` | A whole capture end to end through `replay.py`, with a viewer attached over TCP, checking the CSV and the socket against the recording that went in |
 
@@ -552,7 +529,6 @@ the rest of it does, with the measurements behind each one.
 | `python/main.py` | The capture: port, decimator, CSV, socket. Headless, always |
 | `python/webdash.py` | The dashboard: attaches to a capture and serves it to browsers |
 | `python/web/` | The browser client: page, stylesheet, drawing code, vendored uPlot |
-| `python/view.py` | Offline viewer for logged CSVs |
 | `python/testing/replay.py` | Runs a capture against a logged CSV, for when there is no board |
 | `python/testing/run.py` | Test runner: all modules, or the ones named on the command line |
 | `python/testing/support.py` | Test helpers: typed sample builders, a free port, `wait_for` |
@@ -563,7 +539,7 @@ the rest of it does, with the measurements behind each one.
 - Board: Arduino Nicla Sense ME, FQBN `arduino:mbed_nicla:nicla_sense`
 - Core `arduino:mbed_nicla` 4.6.0, library `Arduino_BHY2` 1.0.8
 - Python 3.9 in `.venv` — the code stays 3.9-compatible
-- `pyserial` 3.5, `matplotlib` 3.9.4
+- `pyserial` 3.5 — the only dependency; everything else is the standard library
 
 Recreate the environment with:
 

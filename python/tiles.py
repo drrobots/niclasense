@@ -1,14 +1,15 @@
 """What the dashboards draw: the palette, the widgets, and where they sit.
 
-Declaration only -- no matplotlib, no browser, no rendering of any kind. Two programs read
-this and draw it two different ways: the browser dashboard into a grid of uPlot charts, and
-view.py into a matplotlib figure over a finished file. Adding a tile here makes it appear in
-both.
+Declaration only -- no renderer, no browser, no rendering of any kind. One program reads
+this and draws it: the browser dashboard, into a grid of uPlot charts. Adding a tile here
+adds it there.
 
 Being declaration only is what lets webhub.py serve this whole module to the browser as
-JSON, and what keeps matplotlib's plotting layer out of the capture's web server. There was
-a third consumer once -- a matplotlib live dashboard -- and pulling these constants out of
-it is what let it be deleted later without taking the layout with it.
+JSON, with nothing but the standard library behind it. There were two other consumers once,
+both matplotlib -- a live dashboard and view.py's offline viewer -- and pulling these
+constants out of the first is what let both be deleted later without taking the layout with
+them. Keep it that way: a renderer imported here would end up inside the capture's web
+server, and a test enforces its absence.
 """
 
 # Palette lifted from the Arduino dashboard: near-black page, slightly lifted tiles,

@@ -1,11 +1,12 @@
-"""The tile declarations, which three renderers read and none of them validate.
+"""The tile declarations, which the renderer reads and does not validate.
 
-plot.py, view.py and the browser client each walk TILES and PLACEMENT and trust what they
-find. A tile naming a column that does not exist raises in one of them, silently draws
-nothing in another, and disappears from the third; a placement that overlaps the capture
-slot draws one widget on top of another. None of that is caught until something is looked
-at, and the declarations are the sort of thing that gets edited by copying the tile above
-it.
+The browser client walks TILES and PLACEMENT and trusts what it finds. A tile naming a
+column that does not exist simply disappears; a placement that overlaps the capture slot
+draws one widget on top of another. Neither is caught until something is looked at, and the
+declarations are the sort of thing that gets edited by copying the tile above it. There were
+three renderers when this was written -- plot.py and view.py drew the same declarations into
+matplotlib -- and the checks were worth more then; they are kept because the failure mode is
+silent either way.
 
 Also checked here: min_span. CLAUDE.md asks for one on every new tile, because without it
 a resting board autoscales to its own quantization noise and reads as dramatic staircases.
@@ -130,42 +131,22 @@ class Bounds(unittest.TestCase):
 
 
 class NoRenderingDependency(unittest.TestCase):
-    """Declaration only: no matplotlib, no browser, no drawing of any kind.
+    """Declaration only: no renderer, no browser, no drawing of any kind.
 
-    This is the property that lets webhub.py serve the whole module to a browser as JSON
-    while view.py draws the same declarations into a matplotlib figure. It was worth a
-    test even when plot.py re-exported these constants; now that view.py imports them
-    from here directly, it is the only thing keeping a stray `import matplotlib` in
-    tiles.py from putting the plotting layer inside the capture's web server.
+    This used to be phrased as "no matplotlib", back when view.py drew these same
+    declarations into a figure and the risk was a stray `import matplotlib` in tiles.py
+    putting the plotting layer inside the capture's web server. matplotlib went with
+    view.py, so that phrasing now passes for the wrong reason -- an import of something
+    that is not installed cannot appear in sys.modules.
+
+    Stated as it should have been: importing the declarations reaches nothing outside the
+    standard library. That is the property the Windows build depends on, where the bundled
+    interpreter carries pyserial and nothing else, and it is the one that would catch a
+    renderer being reintroduced here.
     """
 
     def test_importing_the_declarations_pulls_in_no_renderer(self):
-        import subprocess
-        import sys
-
-        code = (
-            "import sys; import tiles; "
-            "print(any(m == 'matplotlib' or m.startswith('matplotlib.') for m in sys.modules))"
-        )
-        out = subprocess.check_output(
-            [sys.executable, "-c", code], cwd=support.PYTHON_DIR
-        )
-        self.assertEqual(out.strip(), b"False")
-
-    def test_view_takes_its_constants_from_here(self):
-        """It used to get them from plot.py, which dragged matplotlib's plotting layer in
-        to fetch a colour. plot.py is gone; this is where they live."""
-        import matplotlib
-
-        matplotlib.use("Agg")
-        import view
-
-        for name in (
-            "ACCENT", "BSEC_ACCURACY_NOTES", "BSEC_TILES", "CAPTURE_SLOT", "FONT",
-            "GRID", "MUTED", "PAGE_BG", "PLACEMENT", "TEXT", "TILE_BG", "TILE_EDGE",
-            "TILES",
-        ):
-            self.assertIs(getattr(view, name), getattr(tiles, name), name)
+        support.assert_imports_only_stdlib(self, "tiles")
 
 
 if __name__ == "__main__":
