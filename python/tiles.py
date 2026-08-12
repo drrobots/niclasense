@@ -158,10 +158,14 @@ TILES = (
 # environment tiles used to share one row at two columns each, and a two-column tile is
 # about 170 px on a laptop -- a trace with three tick labels and nowhere to put a number.
 #
-# The magnetometer has row 1 to itself. It shared it with the gas resistance until that tile
-# was dropped, and full width suits it: three components on one axis, which is the trace
-# that most rewards the extra pixels. gas_ohm is still recorded -- the column is part of a
-# schema the sketch and columns.py both declare -- it is simply not drawn.
+# The magnetometer has row 1 to itself because it shared the row with the gas resistance
+# and that tile was dropped -- not because width does anything for it. Three components on
+# one axis need *height* to separate; width buys time resolution, which was never the
+# problem. That is a stylesheet question and dash.css answers it: .tile.multi, the four
+# three-trace tiles, get a taller chart than the single-value ones.
+#
+# gas_ohm is still recorded. The column is part of a schema the sketch and columns.py both
+# declare; it is simply not drawn.
 #
 # There used to be a hole here too, a four-column slot in row 1 for the capture tile that
 # every other tile was packed around. The capture state moved to the page header, and this

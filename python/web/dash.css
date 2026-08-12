@@ -190,6 +190,14 @@ body {
 
 .tile-chart { flex: 1 1 auto; min-height: 92px; }
 
+/* Three traces sharing one y-axis need the height that one trace does not: what separates
+   x from y from z is vertical space, and at 92px each of them has about thirty pixels to
+   live in, so a resting board draws three lines on top of each other. Width does nothing
+   for this -- it buys time resolution, which is not what is illegible.
+   Orientation, accelerometer, gyroscope and magnetometer are the four tiles this applies
+   to, and .multi already marks them by counting their series. */
+.tile.multi .tile-chart { min-height: 168px; }
+
 .tile-sub {
   font-size: 10px;
   color: var(--muted);

@@ -271,8 +271,15 @@ to put a number.
 part of a schema the sketch and `columns.py` both declare, and it is what BSEC computes IAQ
 from — it is simply not drawn, because the derived tiles beside it are the ones worth
 watching. Adding it back is one entry in `TILES` and one in `PLACEMENT`. Its departure is
-what gives the magnetometer the full width of row 2, which suits the one trace on the page
-with three components on a single axis.
+why the magnetometer has the whole of row 2, though width is not what that tile needed.
+
+**Three traces need height, not width.** Orientation, accelerometer, gyroscope and
+magnetometer each draw three components against one y-axis, and what separates them is
+vertical space; width only buys time resolution. All tiles had the same 92 px chart, which
+gave each of three traces about thirty pixels and drew a resting board as three lines on top
+of one another. The four multi-component tiles now get a taller chart — `.tile.multi` in
+`dash.css`, which the client marks by counting a tile's series, so a new three-trace tile
+gets it without anything being told about it.
 
 None of this is fixed: the `tiles` dialog resizes, reorders and hides per tab, and `reset to
 default` comes back here.
