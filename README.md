@@ -257,18 +257,25 @@ same time window, so a bump shows up in the same horizontal place everywhere.
 
 - **Row 1** — orientation (heading/pitch/roll, with the raw quaternion under the tile),
   accelerometer, gyroscope
-- **Row 2** — magnetometer, gas resistance
+- **Row 2** — magnetometer, full width
 - **Row 3** — temperature, humidity, pressure
 - **Row 4** — IAQ, CO₂-eq, bVOC-eq
 - **Header strip** — the capture's own state
 
-Four rows of eleven tiles, as 3 / 2 / 3 / 3, every row filling its twelve columns and
-nothing narrower than a third of the page. The six environment tiles used to share one row
-at two columns each, which is about 170 px on a laptop — a trace with three tick labels and
-nowhere to put a number. Row 2 is the two tiles that earn the width: the magnetometer draws
-three components, and the gas resistance moves in visible steps that a narrow tile smears
-into a line. None of this is fixed — the `tiles` dialog resizes and reorders per tab, and
-`reset to default` comes back here.
+Four rows of ten tiles, as 3 / 1 / 3 / 3, every row filling its twelve columns and nothing
+narrower than a third of the page. The six environment tiles used to share one row at two
+columns each, which is about 170 px on a laptop — a trace with three tick labels and nowhere
+to put a number.
+
+**There is no gas resistance tile.** `gas_ohm` is still captured and still in the CSV — it is
+part of a schema the sketch and `columns.py` both declare, and it is what BSEC computes IAQ
+from — it is simply not drawn, because the derived tiles beside it are the ones worth
+watching. Adding it back is one entry in `TILES` and one in `PLACEMENT`. Its departure is
+what gives the magnetometer the full width of row 2, which suits the one trace on the page
+with three components on a single axis.
+
+None of this is fixed: the `tiles` dialog resizes, reorders and hides per tab, and `reset to
+default` comes back here.
 
 The capture state is in the page header rather than in a tile. It was a tile once, in a
 slot the Arduino dashboard gives its RGB LED picker, and it was the odd one out there:

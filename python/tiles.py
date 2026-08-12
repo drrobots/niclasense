@@ -87,15 +87,6 @@ TILES = (
         "min_span": 20.0,
     },
     {
-        "name": "gas",
-        "title": "GAS RESISTANCE",
-        "series": (("gas_ohm", "gas", "#FF9933"),),
-        "value": "gas_ohm",
-        "unit": "ohm",
-        "fmt": "%.0f",
-        "min_span": 2000.0,
-    },
-    {
         "name": "temperature",
         "title": "TEMPERATURE",
         "series": (("temp_C", "temp", "#FF6037"),),
@@ -162,24 +153,24 @@ TILES = (
 
 # Where each tile sits in the 12-column grid: (row, first column, column span).
 #
-# Four rows of eleven tiles, as 3 / 2 / 3 / 3. Every row fills its twelve columns and no
-# tile is narrower than a third of the page, which is the point of the arrangement: the six
+# Four rows of ten tiles, as 3 / 1 / 3 / 3. Every row fills its twelve columns and no tile
+# is narrower than a third of the page, which is the point of the arrangement: the six
 # environment tiles used to share one row at two columns each, and a two-column tile is
 # about 170 px on a laptop -- a trace with three tick labels and nowhere to put a number.
 #
-# Row 1 is the two wide traces on their own. Both are worth the width: the magnetometer
-# draws three components, and the gas resistance moves in visible steps that a narrow tile
-# turns into a smear.
+# The magnetometer has row 1 to itself. It shared it with the gas resistance until that tile
+# was dropped, and full width suits it: three components on one axis, which is the trace
+# that most rewards the extra pixels. gas_ohm is still recorded -- the column is part of a
+# schema the sketch and columns.py both declare -- it is simply not drawn.
 #
-# There used to be a hole here -- a four-column slot in row 1 for the capture tile, which
+# There used to be a hole here too, a four-column slot in row 1 for the capture tile that
 # every other tile was packed around. The capture state moved to the page header, and this
 # grid is twelve equal cells of sensor as a result.
 PLACEMENT = {
     "orientation": (0, 0, 4),
     "accelerometer": (0, 4, 4),
     "gyroscope": (0, 8, 4),
-    "magnetometer": (1, 0, 6),
-    "gas": (1, 6, 6),
+    "magnetometer": (1, 0, 12),
     "temperature": (2, 0, 4),
     "humidity": (2, 4, 4),
     "pressure": (2, 8, 4),
