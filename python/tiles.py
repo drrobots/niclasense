@@ -165,9 +165,12 @@ PLACEMENT = {
     "orientation": (0, 0, 4),
     "accelerometer": (0, 4, 4),
     "gyroscope": (0, 8, 4),
-    "magnetometer": (1, 0, 5),
-    # (1, 5, 4) is the capture tile, in the slot the web dashboard gives the LED picker.
-    "gas": (1, 9, 3),
+    # Row 1 used to be magnetometer 5, a four-column hole for the capture tile, then gas 3.
+    # The capture state lives in the page header now -- it answers "is this working" rather
+    # than drawing a sensor, and it was the only thing making this grid anything other than
+    # twelve equal cells -- so the two of them have the row to themselves.
+    "magnetometer": (1, 0, 7),
+    "gas": (1, 7, 5),
     "temperature": (2, 0, 2),
     "humidity": (2, 2, 2),
     "pressure": (2, 4, 2),
@@ -175,8 +178,6 @@ PLACEMENT = {
     "co2": (2, 8, 2),
     "bvoc": (2, 10, 2),
 }
-
-CAPTURE_SLOT = (1, 5, 4)
 
 # Tiles fed by BSEC, whose outputs are only real once the gas sensor has run in. Until
 # then BSEC reports accuracy 0 and emits fixed placeholders (IAQ 25, CO2 500 ppm, bVOC

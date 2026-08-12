@@ -96,7 +96,6 @@ def build_spec(sample_hz=200.0, source=""):
             }
             for tile in tiles.TILES
         ],
-        "capture_slot": list(tiles.CAPTURE_SLOT),
         "accuracy_notes": {
             str(key): {"note": note, "colour": colour}
             for key, (note, colour) in tiles.BSEC_ACCURACY_NOTES.items()

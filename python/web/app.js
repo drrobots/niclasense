@@ -35,10 +35,6 @@
     [12, "full"],
   ];
 
-  /* The capture tile is not in tiles.py -- it reports on the capture rather than on a
-     sensor -- but it occupies a cell like everything else, so the layout has to know about
-     it or it would sit at its declared coordinates while the others flowed underneath it. */
-  var CAPTURE_NAME = "<capture>";
 
   var spec = null;
   var colIndex = {};      // column name -> position in a sample row
@@ -254,10 +250,7 @@
   }
 
   function isHidden(item) {
-    /* The capture tile cannot be hidden: it is the only thing on the page that says
-       whether the capture is healthy, how many rows have been written and where, and a
-       dashboard that can be configured into not mentioning that is a worse dashboard. */
-    return item.hideable && !!layout.hidden[item.name];
+    return !!layout.hidden[item.name];
   }
 
   function orderedItems() {
@@ -393,50 +386,53 @@
     };
   }
 
-  function buildCaptureTile() {
-    var node = document.createElement("section");
-    node.className = "tile capture";
-    placeOnGrid(node, spec.capture_slot);
+  /* The capture's state, along the header rather than in a tile of its own.
 
-    var head = document.createElement("div");
-    head.className = "tile-head";
-    var title = document.createElement("span");
-    title.className = "tile-title";
-    title.textContent = "CAPTURE";
-    var rate = document.createElement("span");
-    rate.className = "tile-readout";
-    rate.textContent = "--";
-    var unit = document.createElement("span");
-    unit.className = "tile-unit";
-    unit.textContent = "Hz";
-    head.appendChild(title);
-    head.appendChild(rate);
-    head.appendChild(unit);
+     It was a tile, in a slot tiles.py reserved for it, and it was the odd one out there:
+     every other cell draws a sensor over the window you chose, and this one draws nothing
+     and answers "is this working" instead. As a tile it also cost the grid its most
+     awkward constraint -- a hole in the middle of row 1 that the other tiles had to be
+     packed around, and that had to be understood by anything rearranging them.
 
-    var list = document.createElement("dl");
-    list.className = "capture-grid";
+     In the header it is visible at every width, next to the source it describes, and the
+     grid is twelve equal cells of sensor with nothing special in the middle. */
+  function buildCaptureBar() {
+    var bar = document.getElementById("capture");
+    bar.textContent = "";
+
     var fields = [
-      ["file", "file"],
-      ["rows", "rows"],
-      ["logging", "log_rate"],
-      ["buffered", "buffered"],
-      ["loss", "loss"],
+      ["rate", "rate", "Hz"],
+      ["rows", "rows", null],
+      ["logging", "log_rate", null],
+      ["buffered", "buffered", null],
+      ["loss", "loss", null],
+      ["file", "file", null],
     ];
-    var nodes = { node: node, rate: rate };
+    var nodes = { node: bar };
     fields.forEach(function (field) {
-      var term = document.createElement("dt");
-      term.textContent = field[0];
-      var value = document.createElement("dd");
+      var group = document.createElement("span");
+      group.className = "capture-field capture-" + field[1];
+
+      var label = document.createElement("span");
+      label.className = "capture-label";
+      label.textContent = field[0];
+
+      var value = document.createElement("span");
+      value.className = "capture-value";
       value.textContent = "--";
-      list.appendChild(term);
-      list.appendChild(value);
+
+      group.appendChild(label);
+      group.appendChild(value);
+      if (field[2]) {
+        var unit = document.createElement("span");
+        unit.className = "capture-label";
+        unit.textContent = field[2];
+        group.appendChild(unit);
+      }
+      bar.appendChild(group);
       nodes[field[1]] = value;
     });
-
-    node.appendChild(head);
-    node.appendChild(list);
     capture = nodes;
-    return node;
   }
 
   // ---------------------------------------------------------------------
@@ -704,14 +700,19 @@
 
   function updateStatus(status) {
     lastStatus = status;
-    capture.file.textContent = status.csv ? shorten(status.csv, 40) : "not logging";
+    /* Shorter than the tile's 40: this is on one line with everything else now, and the
+       file name matters more than the directories above it. */
+    capture.file.textContent = status.csv ? shorten(status.csv, 28) : "not logging";
+    capture.file.title = status.csv || "";
     var rows = thousands(status.rows || 0);
     if (status.log_rate) {
       rows += "   bursts " + thousands(status.bursts || 0);
     }
     capture.rows.textContent = rows;
     capture.log_rate.textContent = status.log_rate ? String(status.log_rate) : "all";
-    capture.log_rate.className = status.bursting ? "bursting" : "";
+    /* toggle rather than assigning className, which would drop capture-value with it and
+       leave the number unstyled the first time a burst fired. */
+    capture.log_rate.classList.toggle("bursting", !!status.bursting);
 
     var losses = [];
     if (status.dropped) {
@@ -807,10 +808,7 @@
         var shown = document.createElement("input");
         shown.type = "checkbox";
         shown.checked = !isHidden(item);
-        shown.disabled = !item.hideable;
-        shown.title = item.hideable
-          ? "Show this tile"
-          : "The capture tile is always shown";
+        shown.title = "Show this tile";
         shown.addEventListener("change", function () {
           layout.hidden[item.name] = !shown.checked;
           changed();
@@ -999,7 +997,7 @@
     tiles.forEach(function (tile) {
       grid.appendChild(tile.node);
     });
-    grid.appendChild(buildCaptureTile());
+    buildCaptureBar();
 
     /* Everything the viewer can show, hide, resize or reorder, in the order the declared
        layout draws them -- by row, then by column. That is the reading order of the page,
@@ -1011,15 +1009,7 @@
         title: tile.spec.title,
         node: tile.node,
         placement: tile.spec.placement,
-        hideable: true,
       };
-    });
-    layoutItems.push({
-      name: CAPTURE_NAME,
-      title: "CAPTURE",
-      node: capture.node,
-      placement: spec.capture_slot,
-      hideable: false,
     });
     layoutItems.sort(function (a, b) {
       return (a.placement[0] - b.placement[0]) || (a.placement[1] - b.placement[1]);

@@ -257,15 +257,22 @@ same time window, so a bump shows up in the same horizontal place everywhere.
 
 - **Row 1** — orientation (heading/pitch/roll, with the raw quaternion under the tile),
   accelerometer, gyroscope
-- **Row 2** — magnetometer, **capture**, gas resistance
+- **Row 2** — magnetometer, gas resistance
 - **Row 3** — temperature, humidity, pressure, IAQ, CO₂-eq, bVOC-eq
-- **Capture tile** — log Hz, measured Hz, and the window selector
+- **Header strip** — the capture's own state
 
-The capture tile occupies the slot the web dashboard gives its RGB LED picker. Since this
-tool's job is logging rather than driving the board, it reports the log rate (lit while a
-burst is recording, and reading `all` when not decimating), the measured sample rate, the
-CSV being written, rows on disk, burst count, buffered samples, and any dropped or malformed
-samples — that last line turns orange when either is non-zero.
+The capture state is in the page header rather than in a tile. It was a tile once, in a
+slot the Arduino dashboard gives its RGB LED picker, and it was the odd one out there:
+every other cell draws a sensor over the window you chose, and this one draws nothing and
+answers "is this working" instead. It also cost the grid its most awkward constraint — a
+four-column hole in the middle of row 2 that every other tile had to be packed around, and
+that anything rearranging them had to know about. In the header it is visible at every
+width, next to the source line it describes, and the grid is twelve equal cells of sensor.
+
+It reports the measured sample rate, the log rate (lit while a burst is recording, and
+reading `all` when not decimating), the CSV being written, rows on disk, burst count,
+buffered samples, and any dropped or malformed samples — the whole strip turns orange when
+either of those is non-zero.
 
 Tiles are declared in `TILES` in `tiles.py` and positioned by `PLACEMENT`, a 12-column grid;
 moving a widget is a one-line change, and it moves in the offline viewer too. Each tile has
@@ -366,7 +373,7 @@ Points worth knowing:
 
 - **Attached viewers see every sample, not the decimated file.** `--log-rate` thins what
   lands on disk; the socket carries the full 200 Hz. So the dashboard's measured rate reads
-  200 while the capture tile reads a 5 Hz log rate, and both are correct.
+  200 while the header's log rate reads 5 Hz, and both are correct.
 - **The socket speaks the board's own format** — a `#seq,t_ms,...` schema line, a `#`
   banner, then one CSV row per sample, exactly as `nicla_stream.ino` prints them. So
   `nc 127.0.0.1 8765` is a usable client, and the attaching end parses the logger with the
@@ -377,7 +384,7 @@ Points worth knowing:
   or wedged viewer cannot back up the serial buffer and skew log timing, which is the
   failure this design exists to prevent. Viewer-side losses are reported separately from
   the capture's for the same reason.
-- **The capture tile shows the logger's numbers** — its CSV path, row count, burst count
+- **The header strip shows the logger's numbers** — its CSV path, row count, burst count
   and live burst state — pushed over the same connection once a second.
 - **The viewer is its own program, not a mode.** Attaching shares none of the capture's
   settings — no port, no baud, no CSV, no log rate — because those belong to whoever holds
@@ -586,7 +593,7 @@ What the suite is for, module by module:
 | `test_logger.py` | Header written once however often a file is appended to; integer columns reaching disk without a decimal point; the `burst` column only when decimating |
 | `test_hub.py` | The TCP hub over a real socket: schema and banner before data, fan-out to several viewers, status as a comment, drop-oldest backpressure, and that a second capture on a taken port is refused and says so — which on Windows it was not, until CI ran there |
 | `test_webhub.py` | `/spec` really does carry everything `tiles.py` declares; the routes, including that traversal gets nowhere; and that SSE rows arrive batched rather than one event per sample |
-| `test_tiles.py` | The declarations the renderer trusts and does not validate: every series names a real column, every tile is placed, nothing overlaps the capture slot, every tile has a `min_span` — and that importing them reaches nothing outside the standard library |
+| `test_tiles.py` | The declarations the renderer trusts and does not validate: every series names a real column, every tile is placed, nothing overlaps, every tile has a `min_span` — and that importing them reaches nothing outside the standard library |
 | `test_config.py` | Precedence, unknown-key suggestions, and the two argparse edges documented above. Uses `main.build_parser()`, so a new flag is covered the day it is added |
 | `test_capture.py` | A whole capture end to end through `replay.py`, with a viewer attached over TCP, checking the CSV and the socket against the recording that went in |
 | `test_packaging.py` | The three parts of the Windows build that can be checked away from Windows: `supervise.py`'s restart loop, the installed `nicla.conf` parsed with `main.py`'s own parser, and what `build.ps1` stages |

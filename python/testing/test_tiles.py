@@ -71,11 +71,13 @@ class Layout(unittest.TestCase):
             set(tiles.PLACEMENT), set(tile["name"] for tile in tiles.TILES)
         )
 
-    def test_nothing_overlaps_including_the_capture_slot(self):
+    def test_nothing_overlaps(self):
+        """There was a third thing in here -- CAPTURE_SLOT, a hole reserved in row 1 for
+        the capture tile, which every other tile had to be packed around. The capture state
+        moved to the page header, so the grid is now twelve equal cells of sensor and this
+        check has one fewer special case."""
         taken = {}
-        for name, placement in list(tiles.PLACEMENT.items()) + [
-            ("<capture>", tiles.CAPTURE_SLOT)
-        ]:
+        for name, placement in tiles.PLACEMENT.items():
             for cell in self.cells(placement):
                 self.assertNotIn(
                     cell, taken, "%s overlaps %s at %s" % (name, taken.get(cell), cell)

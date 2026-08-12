@@ -22,6 +22,12 @@
     <h1>NICLA SENSE ME</h1>
     <p id="source">connecting&hellip;</p>
   </div>
+  <!-- The capture's own state, filled by app.js from the status events. It lives in the
+       header rather than in a tile because it is not a sensor: it is the answer to "is
+       this working", which belongs where you look first and on every screen width, not in
+       a cell competing with the traces for space. -->
+  <div id="capture" class="capture-bar"></div>
+
   <div class="controls">
     <span id="clock" class="clock">t + 0.0 s</span>
     <label class="control">

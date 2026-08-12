@@ -198,31 +198,51 @@ body {
   min-height: 12px;
 }
 
-/* -- capture tile ------------------------------------------------------- */
+/* -- capture strip ------------------------------------------------------ */
 
-.capture { justify-content: flex-start; gap: 3px; }
+/* The capture's state, along the header. It was a tile in the grid; it is not a sensor
+   and it was the only thing keeping that grid from being twelve equal cells.
 
-.capture-grid {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 2px 12px;
+   Wraps rather than clips, unlike the banner above it: every field here is a fact about
+   whether the capture is working, and the one that would fall off the end on a narrow
+   screen is as likely to be the one that matters as any other. */
+.capture-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 14px;
+  min-width: 0;
   font-size: 11px;
   line-height: 1.5;
 }
 
-.capture-grid dt { color: var(--muted); }
+.capture-field {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+}
 
-.capture-grid dd {
-  margin: 0;
+.capture-label { color: var(--muted); }
+
+.capture-value {
   font-variant-numeric: tabular-nums;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* Loss is the one thing on this tile worth interrupting for, so it recolours the whole
-   readout rather than adding a line someone has to notice. */
-.capture.lossy .capture-grid dd { color: var(--alarm); }
+/* The one number here that is a headline rather than a detail: if the rate is not what
+   the board is meant to be sending, nothing else on the page can be trusted. */
+.capture-rate .capture-value {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* Loss is the one thing worth interrupting for, so it recolours the whole strip rather
+   than adding a field someone has to notice. */
+.capture-bar.lossy .capture-value { color: var(--alarm); }
 
 .bursting { color: var(--accent); }
 
