@@ -120,6 +120,22 @@ body {
   gap: 10px;
 }
 
+/* Set by app.js the moment the viewer changes anything in the tiles dialog. The declared
+   placement in tiles.py is absolute, so a hidden tile leaves a hole and a widened one
+   overlaps its neighbour; in this mode every tile carries only a width and the browser
+   packs them in DOM order. `dense` lets a narrow tile fill a gap an earlier wide one left
+   at the end of a row, which is the difference between a packed grid and a staircase. */
+.grid.custom {
+  grid-auto-flow: row dense;
+}
+
+/* .tile sets display:flex, which beats a bare [hidden] -- the attribute only carries
+   display:none at the weakest possible specificity. Without this rule, hiding a tile in
+   the dialog would do nothing at all. */
+.tile[hidden] {
+  display: none;
+}
+
 .tile {
   background: var(--tile-bg);
   border: 1px solid var(--tile-edge);
@@ -219,6 +235,78 @@ body {
   border-radius: 4px;
   color: var(--alarm);
   font-size: 12px;
+}
+
+/* -- tiles dialog ------------------------------------------------------- */
+
+.settings {
+  background: var(--tile-bg);
+  color: var(--text);
+  border: 1px solid var(--tile-edge);
+  border-radius: 6px;
+  padding: 16px 18px;
+  min-width: 320px;
+  max-width: min(560px, 92vw);
+  font-family: inherit;
+}
+
+.settings::backdrop {
+  /* Dimmed rather than themed: the grid behind stays readable, which matters while you
+     are choosing what to do to it. */
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.settings h2 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.settings-hint {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.settings-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.settings-row {
+  display: grid;
+  /* Name takes the slack; the three controls are their own width. */
+  grid-template-columns: 1fr auto auto auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.settings .control:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 /* -- responsive --------------------------------------------------------- */

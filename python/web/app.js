@@ -20,6 +20,25 @@
   var THEME_KEY = "nicla-theme";
   var WINDOW_KEY = "nicla-window";
   var UNITS_KEY = "nicla-alt-units";
+  var LAYOUT_KEY = "nicla-layout";
+
+  /* Widths a tile can be given, in columns of the 12-column grid. Chosen to tile a row
+     evenly -- six narrow, four medium, three wide, two half, one full -- rather than
+     because a row has to be filled by equal widths. tiles.py's own row 1 is 5 + 4 + 3, and
+     a tile that still declares a width not offered here keeps it as an extra choice below,
+     so opening this dialog can never quietly resize something. */
+  var WIDTHS = [
+    [2, "narrow"],
+    [3, "medium"],
+    [4, "wide"],
+    [6, "half"],
+    [12, "full"],
+  ];
+
+  /* The capture tile is not in tiles.py -- it reports on the capture rather than on a
+     sensor -- but it occupies a cell like everything else, so the layout has to know about
+     it or it would sit at its declared coordinates while the others flowed underneath it. */
+  var CAPTURE_NAME = "<capture>";
 
   var spec = null;
   var colIndex = {};      // column name -> position in a sample row
@@ -29,6 +48,8 @@
   var capture = {};       // capture tile's DOM nodes
   var windowS = DEFAULT_WINDOW;
   var altUnits = false;   // show tiles declaring an alt_unit in it, per tab
+  var layout = { hidden: {}, span: {}, order: null };
+  var layoutItems = [];   // every placeable thing, tiles plus the capture tile
   var lastStatus = {};
   var dirty = false;      // samples have arrived since the last frame
 
@@ -198,6 +219,117 @@
     var span = placement[2];
     node.style.gridRow = String(row + 1);
     node.style.gridColumn = (first + 1) + " / span " + span;
+  }
+
+  /* Two layout modes, and the second one exists because of the first.
+
+     The declared mode is tiles.py's PLACEMENT: absolute (row, column, span) for every
+     tile, hand-packed, with a hole left for the capture tile. It is a deliberate
+     arrangement and it is what the page opens on.
+
+     Hide a tile in that mode, or widen one, and you get a hole or an overlap -- absolute
+     coordinates do not close up behind anything. So the moment the viewer changes
+     anything, the whole grid switches to auto-flow: every tile keeps a width and the
+     browser packs them in order. That is not a new mechanism to trust; it is what
+     dash.css already does at every width below 1180px, where the same tiles flow into two
+     columns with their placement overridden. This just reaches for it a bit sooner.
+
+     Which means the hand-packed layout is never half-applied: it is all of it, or none. */
+  function customLayout() {
+    if (layout.order) {
+      return true;
+    }
+    var name;
+    for (name in layout.hidden) {
+      if (layout.hidden[name]) { return true; }
+    }
+    for (name in layout.span) {
+      if (layout.span[name]) { return true; }
+    }
+    return false;
+  }
+
+  function spanOf(item) {
+    return layout.span[item.name] || item.placement[2];
+  }
+
+  function isHidden(item) {
+    /* The capture tile cannot be hidden: it is the only thing on the page that says
+       whether the capture is healthy, how many rows have been written and where, and a
+       dashboard that can be configured into not mentioning that is a worse dashboard. */
+    return item.hideable && !!layout.hidden[item.name];
+  }
+
+  function orderedItems() {
+    if (!layout.order) {
+      return layoutItems.slice();
+    }
+    var byName = {};
+    layoutItems.forEach(function (item) { byName[item.name] = item; });
+    var ordered = [];
+    layout.order.forEach(function (name) {
+      if (byName[name]) {
+        ordered.push(byName[name]);
+        delete byName[name];
+      }
+    });
+    /* Anything the saved order does not mention -- a tile added to tiles.py since it was
+       saved -- goes at the end rather than disappearing. A stored layout must never be
+       able to hide a new tile from someone who has not opened this dialog in a year. */
+    layoutItems.forEach(function (item) {
+      if (byName[item.name]) { ordered.push(item); }
+    });
+    return ordered;
+  }
+
+  function applyLayout() {
+    var grid = document.getElementById("grid");
+    var custom = customLayout();
+    grid.classList.toggle("custom", custom);
+
+    orderedItems().forEach(function (item) {
+      item.node.hidden = isHidden(item);
+      if (custom) {
+        item.node.style.gridRow = "";
+        item.node.style.gridColumn = "span " + spanOf(item);
+        /* Appending a node already in the grid moves it, which is how the order is
+           applied: auto-flow packs in DOM order. */
+        grid.appendChild(item.node);
+      } else {
+        placeOnGrid(item.node, item.placement);
+      }
+    });
+
+    /* uPlot sizes itself in pixels and cannot know its cell changed. A tile that was
+       hidden measures zero while hidden, so this has to run after the display flip
+       rather than before it. */
+    tiles.forEach(function (tile) {
+      if (tile.chart && !tile.node.hidden) {
+        tile.chart.setSize({
+          width: Math.max(tile.chartNode.clientWidth, 80),
+          height: Math.max(tile.chartNode.clientHeight, 80),
+        });
+      }
+    });
+    dirty = true;
+  }
+
+  function saveLayout() {
+    try {
+      localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
+    } catch (e) { /* ignore */ }
+  }
+
+  function loadLayout() {
+    var stored = null;
+    try {
+      stored = JSON.parse(localStorage.getItem(LAYOUT_KEY) || "null");
+    } catch (e) { /* a corrupt value is the same as no value */ }
+    if (stored && typeof stored === "object") {
+      layout.hidden = stored.hidden && typeof stored.hidden === "object" ? stored.hidden : {};
+      layout.span = stored.span && typeof stored.span === "object" ? stored.span : {};
+      layout.order = stored.order instanceof Array ? stored.order : null;
+    }
   }
 
   function buildTile(tileSpec) {
@@ -480,6 +612,12 @@
     }
 
     tiles.forEach(function (tile) {
+      /* A hidden tile is not drawn and not measured. The min/max below runs over every
+         sample in the window rather than over the strided points, so skipping one the
+         viewer has turned off is the cheapest thing on this page. */
+      if (tile.node.hidden) {
+        return;
+      }
       var data = [xs];
       var low = null;
       var high = null;
@@ -631,6 +769,120 @@
     });
 
     buildUnitsControl();
+    buildLayoutControl();
+  }
+
+  /* The tiles dialog: one row per placeable thing, in the order they are drawn. Built from
+     layoutItems rather than from a list here, so a tile added to tiles.py turns up in it
+     without this function being touched. */
+  function buildLayoutControl() {
+    var dialog = document.getElementById("settings");
+    var rows = document.getElementById("settings-rows");
+
+    function changed() {
+      saveLayout();
+      applyLayout();
+      render();
+    }
+
+    function move(name, delta) {
+      var order = orderedItems().map(function (item) { return item.name; });
+      var from = order.indexOf(name);
+      var to = from + delta;
+      if (from < 0 || to < 0 || to >= order.length) {
+        return;
+      }
+      order.splice(to, 0, order.splice(from, 1)[0]);
+      layout.order = order;
+      changed();
+    }
+
+    function render() {
+      rows.textContent = "";
+      var items = orderedItems();
+      items.forEach(function (item, index) {
+        var row = document.createElement("div");
+        row.className = "settings-row";
+
+        var shown = document.createElement("input");
+        shown.type = "checkbox";
+        shown.checked = !isHidden(item);
+        shown.disabled = !item.hideable;
+        shown.title = item.hideable
+          ? "Show this tile"
+          : "The capture tile is always shown";
+        shown.addEventListener("change", function () {
+          layout.hidden[item.name] = !shown.checked;
+          changed();
+        });
+
+        var label = document.createElement("label");
+        label.className = "settings-name";
+        label.appendChild(shown);
+        label.appendChild(document.createTextNode(" " + item.title));
+
+        var width = document.createElement("select");
+        width.className = "control";
+        var choices = WIDTHS.slice();
+        var declared = item.placement[2];
+        if (!choices.some(function (choice) { return choice[0] === declared; })) {
+          /* The magnetometer is declared 5 wide and the presets do not offer 5. Without
+             this the select would open blank and the first touch of any other control in
+             the row would silently resize it. */
+          choices.push([declared, "declared"]);
+          choices.sort(function (a, b) { return a[0] - b[0]; });
+        }
+        choices.forEach(function (choice) {
+          var option = document.createElement("option");
+          option.value = String(choice[0]);
+          option.textContent = choice[1] + " (" + choice[0] + "/12)";
+          width.appendChild(option);
+        });
+        width.value = String(spanOf(item));
+        width.addEventListener("change", function () {
+          layout.span[item.name] = +width.value;
+          changed();
+        });
+
+        var up = document.createElement("button");
+        up.type = "button";
+        up.className = "control";
+        up.textContent = "↑";
+        up.disabled = index === 0;
+        up.addEventListener("click", function () { move(item.name, -1); });
+
+        var down = document.createElement("button");
+        down.type = "button";
+        down.className = "control";
+        down.textContent = "↓";
+        down.disabled = index === items.length - 1;
+        down.addEventListener("click", function () { move(item.name, 1); });
+
+        row.appendChild(label);
+        row.appendChild(width);
+        row.appendChild(up);
+        row.appendChild(down);
+        rows.appendChild(row);
+      });
+    }
+
+    document.getElementById("settings-reset").addEventListener("click", function () {
+      layout.hidden = {};
+      layout.span = {};
+      layout.order = null;
+      try {
+        localStorage.removeItem(LAYOUT_KEY);
+      } catch (e) { /* ignore */ }
+      applyLayout();
+      render();
+    });
+
+    document.getElementById("layout").addEventListener("click", function () {
+      /* Rendered on open rather than kept in step: the dialog is the only thing that
+         edits this state, so anything stale in it came from the last time it was open. */
+      render();
+      dialog.showModal();
+    });
   }
 
   /* The units toggle, driven entirely by /spec: it appears only if some tile declares an
@@ -749,8 +1001,34 @@
     });
     grid.appendChild(buildCaptureTile());
 
+    /* Everything the viewer can show, hide, resize or reorder, in the order the declared
+       layout draws them -- by row, then by column. That is the reading order of the page,
+       and it is the order the flowed layout should start from; the order the tiles happen
+       to appear in tiles.py is not. */
+    layoutItems = tiles.map(function (tile) {
+      return {
+        name: tile.spec.name,
+        title: tile.spec.title,
+        node: tile.node,
+        placement: tile.spec.placement,
+        hideable: true,
+      };
+    });
+    layoutItems.push({
+      name: CAPTURE_NAME,
+      title: "CAPTURE",
+      node: capture.node,
+      placement: spec.capture_slot,
+      hideable: false,
+    });
+    layoutItems.sort(function (a, b) {
+      return (a.placement[0] - b.placement[0]) || (a.placement[1] - b.placement[1]);
+    });
+
     buildControls();
     tiles.forEach(makeChart);
+    /* After makeChart, because applying a stored layout resizes the charts it shows. */
+    applyLayout();
     connect();
     requestAnimationFrame(frame);
   }
@@ -765,6 +1043,7 @@
        controls are, and a tile's unit label is written once at construction. */
     altUnits = localStorage.getItem(UNITS_KEY) === "1";
   } catch (e) { /* ignore */ }
+  loadLayout();
 
   fetch("/spec")
     .then(function (response) { return response.json(); })

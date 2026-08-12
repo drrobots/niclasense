@@ -288,6 +288,15 @@ Consequences of drawing client-side, all of which are the reason for it:
   its own units. Two people can watch one capture over different spans, and neither sees the
   other's cursor. This is why `main.py` has no `--window` or `--fps` to pass: neither is a
   property of the capture, or even of the dashboard process.
+- **Which tiles, how wide, in what order** — the `tiles` button opens a dialog with a row
+  per tile: a checkbox, a width in grid columns, and up/down. Per tab and persisted, and
+  `reset to default` restores `tiles.py`'s layout exactly. The declared layout in
+  `PLACEMENT` is absolute `(row, column, span)`, so it cannot survive a tile being hidden or
+  widened — a hole does not close and a wide tile overlaps its neighbour. So the grid is
+  all-or-nothing: touch anything and the whole page switches to auto-flow, every tile
+  keeping a width and the browser packing them in order. That is not a new mechanism to
+  trust — it is what the page already does at every width below 1180px. Hidden tiles are
+  skipped by the draw loop, which makes hiding one a small speed-up rather than a cost.
 - **Units are a display choice, and only that.** A tile may declare an `alt_unit` in
   `tiles.py` — temperature declares Fahrenheit — and the header grows a toggle that switches
   every such tile between the two, persisted per tab. The whole visible window converts, not
