@@ -161,22 +161,31 @@ TILES = (
 )
 
 # Where each tile sits in the 12-column grid: (row, first column, column span).
+#
+# Four rows of eleven tiles, as 3 / 2 / 3 / 3. Every row fills its twelve columns and no
+# tile is narrower than a third of the page, which is the point of the arrangement: the six
+# environment tiles used to share one row at two columns each, and a two-column tile is
+# about 170 px on a laptop -- a trace with three tick labels and nowhere to put a number.
+#
+# Row 1 is the two wide traces on their own. Both are worth the width: the magnetometer
+# draws three components, and the gas resistance moves in visible steps that a narrow tile
+# turns into a smear.
+#
+# There used to be a hole here -- a four-column slot in row 1 for the capture tile, which
+# every other tile was packed around. The capture state moved to the page header, and this
+# grid is twelve equal cells of sensor as a result.
 PLACEMENT = {
     "orientation": (0, 0, 4),
     "accelerometer": (0, 4, 4),
     "gyroscope": (0, 8, 4),
-    # Row 1 used to be magnetometer 5, a four-column hole for the capture tile, then gas 3.
-    # The capture state lives in the page header now -- it answers "is this working" rather
-    # than drawing a sensor, and it was the only thing making this grid anything other than
-    # twelve equal cells -- so the two of them have the row to themselves.
-    "magnetometer": (1, 0, 7),
-    "gas": (1, 7, 5),
-    "temperature": (2, 0, 2),
-    "humidity": (2, 2, 2),
-    "pressure": (2, 4, 2),
-    "iaq": (2, 6, 2),
-    "co2": (2, 8, 2),
-    "bvoc": (2, 10, 2),
+    "magnetometer": (1, 0, 6),
+    "gas": (1, 6, 6),
+    "temperature": (2, 0, 4),
+    "humidity": (2, 4, 4),
+    "pressure": (2, 8, 4),
+    "iaq": (3, 0, 4),
+    "co2": (3, 4, 4),
+    "bvoc": (3, 8, 4),
 }
 
 # Tiles fed by BSEC, whose outputs are only real once the gas sensor has run in. Until
