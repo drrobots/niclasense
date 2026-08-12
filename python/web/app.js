@@ -22,20 +22,6 @@
   var UNITS_KEY = "nicla-alt-units";
   var LAYOUT_KEY = "nicla-layout";
 
-  /* Widths a tile can be given, in columns of the 12-column grid. Chosen to tile a row
-     evenly -- six narrow, four medium, three wide, two half, one full -- rather than
-     because a row has to be filled by equal widths. tiles.py's own row 1 is 5 + 4 + 3, and
-     a tile that still declares a width not offered here keeps it as an extra choice below,
-     so opening this dialog can never quietly resize something. */
-  var WIDTHS = [
-    [2, "narrow"],
-    [3, "medium"],
-    [4, "wide"],
-    [6, "half"],
-    [12, "full"],
-  ];
-
-
   var spec = null;
   var colIndex = {};      // column name -> position in a sample row
   var store = {};         // column name -> Column
@@ -208,6 +194,20 @@
 
   // ---------------------------------------------------------------------
   // Layout
+  //
+  // There is no user interface for any of this at present. There was a dialog -- a row per
+  // tile with a checkbox, a width and up/down -- and it was removed; what follows is
+  // deliberately not, because the model is the awkward half and the dialog was the easy
+  // one. Anything wanting to drive it, a control put back here or a person at a console,
+  // writes the same shape to localStorage under LAYOUT_KEY and reloads:
+  //
+  //     {"hidden": {"iaq": true}, "span": {"temperature": 6}, "order": ["gyroscope", ...]}
+  //
+  // hidden is by tile name, span is in grid columns (1..12), order is tile names and may
+  // name only some of them -- see orderedItems. Anything absent falls back to the declared
+  // layout in tiles.py, and clearing the key restores it entirely. loadLayout runs at
+  // start-up and applyLayout on every change, so the path is exercised on every page load
+  // rather than kept warm on trust; saveLayout is the one piece nothing currently calls.
 
   function placeOnGrid(node, placement) {
     var row = placement[0];
@@ -268,7 +268,7 @@
     });
     /* Anything the saved order does not mention -- a tile added to tiles.py since it was
        saved -- goes at the end rather than disappearing. A stored layout must never be
-       able to hide a new tile from someone who has not opened this dialog in a year. */
+       able to hide a tile added to tiles.py after it was written. */
     layoutItems.forEach(function (item) {
       if (byName[item.name]) { ordered.push(item); }
     });
@@ -770,117 +770,6 @@
     });
 
     buildUnitsControl();
-    buildLayoutControl();
-  }
-
-  /* The tiles dialog: one row per placeable thing, in the order they are drawn. Built from
-     layoutItems rather than from a list here, so a tile added to tiles.py turns up in it
-     without this function being touched. */
-  function buildLayoutControl() {
-    var dialog = document.getElementById("settings");
-    var rows = document.getElementById("settings-rows");
-
-    function changed() {
-      saveLayout();
-      applyLayout();
-      render();
-    }
-
-    function move(name, delta) {
-      var order = orderedItems().map(function (item) { return item.name; });
-      var from = order.indexOf(name);
-      var to = from + delta;
-      if (from < 0 || to < 0 || to >= order.length) {
-        return;
-      }
-      order.splice(to, 0, order.splice(from, 1)[0]);
-      layout.order = order;
-      changed();
-    }
-
-    function render() {
-      rows.textContent = "";
-      var items = orderedItems();
-      items.forEach(function (item, index) {
-        var row = document.createElement("div");
-        row.className = "settings-row";
-
-        var shown = document.createElement("input");
-        shown.type = "checkbox";
-        shown.checked = !isHidden(item);
-        shown.title = "Show this tile";
-        shown.addEventListener("change", function () {
-          layout.hidden[item.name] = !shown.checked;
-          changed();
-        });
-
-        var label = document.createElement("label");
-        label.className = "settings-name";
-        label.appendChild(shown);
-        label.appendChild(document.createTextNode(" " + item.title));
-
-        var width = document.createElement("select");
-        width.className = "control";
-        var choices = WIDTHS.slice();
-        var declared = item.placement[2];
-        if (!choices.some(function (choice) { return choice[0] === declared; })) {
-          /* The magnetometer is declared 5 wide and the presets do not offer 5. Without
-             this the select would open blank and the first touch of any other control in
-             the row would silently resize it. */
-          choices.push([declared, "declared"]);
-          choices.sort(function (a, b) { return a[0] - b[0]; });
-        }
-        choices.forEach(function (choice) {
-          var option = document.createElement("option");
-          option.value = String(choice[0]);
-          option.textContent = choice[1] + " (" + choice[0] + "/12)";
-          width.appendChild(option);
-        });
-        width.value = String(spanOf(item));
-        width.addEventListener("change", function () {
-          layout.span[item.name] = +width.value;
-          changed();
-        });
-
-        var up = document.createElement("button");
-        up.type = "button";
-        up.className = "control";
-        up.textContent = "↑";
-        up.disabled = index === 0;
-        up.addEventListener("click", function () { move(item.name, -1); });
-
-        var down = document.createElement("button");
-        down.type = "button";
-        down.className = "control";
-        down.textContent = "↓";
-        down.disabled = index === items.length - 1;
-        down.addEventListener("click", function () { move(item.name, 1); });
-
-        row.appendChild(label);
-        row.appendChild(width);
-        row.appendChild(up);
-        row.appendChild(down);
-        rows.appendChild(row);
-      });
-    }
-
-    document.getElementById("settings-reset").addEventListener("click", function () {
-      layout.hidden = {};
-      layout.span = {};
-      layout.order = null;
-      try {
-        localStorage.removeItem(LAYOUT_KEY);
-      } catch (e) { /* ignore */ }
-      applyLayout();
-      render();
-    });
-
-    document.getElementById("layout").addEventListener("click", function () {
-      /* Rendered on open rather than kept in step: the dialog is the only thing that
-         edits this state, so anything stale in it came from the last time it was open. */
-      render();
-      dialog.showModal();
-    });
   }
 
   /* The units toggle, driven entirely by /spec: it appears only if some tile declares an

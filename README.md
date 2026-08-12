@@ -281,8 +281,8 @@ of one another. The four multi-component tiles now get a taller chart — `.tile
 `dash.css`, which the client marks by counting a tile's series, so a new three-trace tile
 gets it without anything being told about it.
 
-None of this is fixed: the `tiles` dialog resizes, reorders and hides per tab, and `reset to
-default` comes back here.
+None of this is fixed: a per-tab override can resize, reorder and hide, and clearing it
+comes back here. See the dashboard section above for how one is set.
 
 The capture state is in the page header rather than in a tile. It was a tile once, in a
 slot the Arduino dashboard gives its RGB LED picker, and it was the odd one out there:
@@ -318,15 +318,26 @@ Consequences of drawing client-side, all of which are the reason for it:
   its own units. Two people can watch one capture over different spans, and neither sees the
   other's cursor. This is why `main.py` has no `--window` or `--fps` to pass: neither is a
   property of the capture, or even of the dashboard process.
-- **Which tiles, how wide, in what order** — the `tiles` button opens a dialog with a row
-  per tile: a checkbox, a width in grid columns, and up/down. Per tab and persisted, and
-  `reset to default` restores `tiles.py`'s layout exactly. The declared layout in
-  `PLACEMENT` is absolute `(row, column, span)`, so it cannot survive a tile being hidden or
-  widened — a hole does not close and a wide tile overlaps its neighbour. So the grid is
-  all-or-nothing: touch anything and the whole page switches to auto-flow, every tile
-  keeping a width and the browser packing them in order. That is not a new mechanism to
-  trust — it is what the page already does at every width below 1180px. Hidden tiles are
-  skipped by the draw loop, which makes hiding one a small speed-up rather than a cost.
+- **Which tiles, how wide, in what order** — overridable per tab, with no user interface at
+  present. There was a dialog behind a `tiles` button and it was removed; the model behind
+  it was kept, because the model is the awkward half. Write the override to `localStorage`
+  under `nicla-layout` and reload:
+
+  ```js
+  localStorage.setItem("nicla-layout", JSON.stringify({
+    hidden: { iaq: true }, span: { temperature: 6 }, order: null
+  }))
+  ```
+
+  `hidden` is by tile name, `span` is in grid columns, `order` is a list of tile names and
+  may mention only some of them. Anything absent falls back to `tiles.py`, and clearing the
+  key restores the declared layout entirely. The declared layout is absolute
+  `(row, column, span)`, so it cannot survive a tile being hidden or widened — a hole does
+  not close and a wide tile overlaps its neighbour — which makes this all-or-nothing: any
+  override switches the whole grid to auto-flow, every tile keeping a width and the browser
+  packing them in order. That is not a new mechanism to trust; it is what the page already
+  does at every width below 1180px. Hidden tiles are skipped by the draw loop, so hiding one
+  is a small speed-up rather than a cost.
 - **Units are a display choice, and only that.** A tile may declare an `alt_unit` in
   `tiles.py` — temperature declares Fahrenheit — and the header grows a toggle that switches
   every such tile between the two, persisted per tab. The whole visible window converts, not

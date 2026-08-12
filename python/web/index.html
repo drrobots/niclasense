@@ -38,31 +38,8 @@
          does not promise a control the layout may not have a use for. -->
     <button id="units" class="control" type="button" title="Switch units" hidden></button>
     <button id="theme" class="control" type="button" title="Switch theme">theme</button>
-    <button id="layout" class="control" type="button" title="Choose tiles and sizes">tiles</button>
   </div>
 </header>
-
-<!--
-  Which tiles are shown, how wide, and in what order. Per tab and persisted, like the window
-  length and the theme: the rows are built by app.js from /spec, so this is only the frame.
-
-  A dialog rather than a panel because the choice is made rarely and the grid is the point
-  of the page; showModal() also gives the escape key and the focus trap for nothing.
--->
-<dialog id="settings" class="settings">
-  <form method="dialog">
-    <h2>Tiles</h2>
-    <p class="settings-hint">
-      Shown, how wide, and in what order. Kept in this browser, for this tab's next visit.
-      Sizes apply to the wide layout; narrower screens always flow to one or two columns.
-    </p>
-    <div id="settings-rows" class="settings-rows"></div>
-    <div class="settings-actions">
-      <button id="settings-reset" type="button" class="control">reset to default</button>
-      <button value="close" class="control">done</button>
-    </div>
-  </form>
-</dialog>
 
 <!-- Shown over the grid when the stream drops; the tiles stay visible behind it, frozen
      on their last samples, because a blank page loses what you were looking at. -->
