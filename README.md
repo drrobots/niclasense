@@ -255,14 +255,15 @@ A dark tile grid modelled on Arduino's own [NiclaSenseME web dashboard][dash]: o
 per sensor, current value beside the title, scrolling trace underneath. All tiles share the
 same time window, so a bump shows up in the same horizontal place everywhere.
 
-- **Row 1** — orientation (heading/pitch/roll, with the raw quaternion under the tile),
-  accelerometer, gyroscope
-- **Row 2** — magnetometer, full width
+- **Row 1** — accelerometer, gyroscope
+- **Row 2** — orientation (heading/pitch/roll, with the raw quaternion under the tile),
+  magnetometer
 - **Row 3** — temperature, humidity, pressure
 - **Row 4** — IAQ, CO₂-eq, bVOC-eq
 - **Header strip** — the capture's own state
 
-Four rows of ten tiles, as 3 / 1 / 3 / 3, every row filling its twelve columns and nothing
+Four rows of ten tiles, as 2 / 2 / 3 / 3 — the four three-trace tiles paired across the top
+two rows, then the environment tiles — every row filling its twelve columns and nothing
 narrower than a third of the page. The six environment tiles used to share one row at two
 columns each, which is about 170 px on a laptop — a trace with three tick labels and nowhere
 to put a number.
@@ -270,8 +271,7 @@ to put a number.
 **There is no gas resistance tile.** `gas_ohm` is still captured and still in the CSV — it is
 part of a schema the sketch and `columns.py` both declare, and it is what BSEC computes IAQ
 from — it is simply not drawn, because the derived tiles beside it are the ones worth
-watching. Adding it back is one entry in `TILES` and one in `PLACEMENT`. Its departure is
-why the magnetometer has the whole of row 2, though width is not what that tile needed.
+watching. Adding it back is one entry in `TILES` and one in `PLACEMENT`.
 
 **Three traces need height, not width.** Orientation, accelerometer, gyroscope and
 magnetometer each draw three components against one y-axis, and what separates them is

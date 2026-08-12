@@ -153,16 +153,15 @@ TILES = (
 
 # Where each tile sits in the 12-column grid: (row, first column, column span).
 #
-# Four rows of ten tiles, as 3 / 1 / 3 / 3. Every row fills its twelve columns and no tile
+# Four rows of ten tiles, as 2 / 2 / 3 / 3. Every row fills its twelve columns and no tile
 # is narrower than a third of the page, which is the point of the arrangement: the six
 # environment tiles used to share one row at two columns each, and a two-column tile is
 # about 170 px on a laptop -- a trace with three tick labels and nowhere to put a number.
 #
-# The magnetometer has row 1 to itself because it shared the row with the gas resistance
-# and that tile was dropped -- not because width does anything for it. Three components on
-# one axis need *height* to separate; width buys time resolution, which was never the
-# problem. That is a stylesheet question and dash.css answers it: .tile.multi, the four
-# three-trace tiles, get a taller chart than the single-value ones.
+# The top two rows are the four three-trace tiles, in pairs. What those need is *height* --
+# vertical space is what separates x from y from z, and width only buys time resolution --
+# which is a stylesheet question that dash.css answers with .tile.multi. Six columns each is
+# just what pairs them evenly; it is not what makes them readable.
 #
 # gas_ohm is still recorded. The column is part of a schema the sketch and columns.py both
 # declare; it is simply not drawn.
@@ -171,10 +170,10 @@ TILES = (
 # every other tile was packed around. The capture state moved to the page header, and this
 # grid is twelve equal cells of sensor as a result.
 PLACEMENT = {
-    "orientation": (0, 0, 4),
-    "accelerometer": (0, 4, 4),
-    "gyroscope": (0, 8, 4),
-    "magnetometer": (1, 0, 12),
+    "accelerometer": (0, 0, 6),
+    "gyroscope": (0, 6, 6),
+    "orientation": (1, 0, 6),
+    "magnetometer": (1, 6, 6),
     "temperature": (2, 0, 4),
     "humidity": (2, 4, 4),
     "pressure": (2, 8, 4),
