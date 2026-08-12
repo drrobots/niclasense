@@ -50,6 +50,32 @@ class Spec(unittest.TestCase):
                 [colour for _c, _l, colour in declared["series"]],
             )
 
+    def test_an_alternative_unit_reaches_the_client(self):
+        """The units toggle is built from /spec alone -- it appears only because a tile
+        declares an alt_unit, and is labelled from it -- so a field dropped here is a
+        control that silently stops existing."""
+        described = dict(
+            (tile["name"], tile) for tile in self.spec["tiles"]
+        )
+        for declared in tiles.TILES:
+            alt = declared.get("alt_unit")
+            served = described[declared["name"]]["alt_unit"]
+            if alt is None:
+                self.assertIsNone(served)
+                continue
+            self.assertEqual(served, dict(alt))
+            for field in ("unit", "mul", "add", "min_span"):
+                self.assertIn(field, served)
+
+    def test_the_alternative_unit_is_a_copy(self):
+        """It is about to be JSON, and handing the client a reference to a module-level
+        mapping it then owns is the kind of thing that stays harmless until it does not."""
+        for name, tile in ((t["name"], t) for t in tiles.TILES):
+            if tile.get("alt_unit") is None:
+                continue
+            served = [t for t in self.spec["tiles"] if t["name"] == name][0]
+            self.assertIsNot(served["alt_unit"], tile["alt_unit"])
+
     def test_the_bsec_tiles_are_flagged(self):
         flagged = set(t["name"] for t in self.spec["tiles"] if t["bsec"])
         self.assertEqual(flagged, set(tiles.BSEC_TILES))

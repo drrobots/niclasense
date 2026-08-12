@@ -123,6 +123,52 @@ class Palette(unittest.TestCase):
         self.assertEqual(set(tiles.BSEC_ACCURACY_NOTES), set((0, 1, 2, 3)))
 
 
+class AlternativeUnits(unittest.TestCase):
+    """A tile may offer a second unit the viewer can switch into. Display only.
+
+    The rule worth protecting is the one that is not visible in the browser: whatever a tab
+    is showing, the wire and the CSV stay in the unit the column is named in. A conversion
+    that reached the file would make a log mean something different depending on what
+    somebody happened to be looking at when it was written.
+    """
+
+    def alt_tiles(self):
+        return [tile for tile in tiles.TILES if tile.get("alt_unit")]
+
+    def test_the_declaration_is_complete(self):
+        for tile in self.alt_tiles():
+            alt = tile["alt_unit"]
+            self.assertEqual(set(alt), set(("unit", "mul", "add", "min_span")), tile["name"])
+
+    def test_the_multiplier_is_positive(self):
+        """The client converts the two extremes of a window rather than every sample in
+        it, which is only sound while the conversion cannot reorder them."""
+        for tile in self.alt_tiles():
+            self.assertGreater(tile["alt_unit"]["mul"], 0, tile["name"])
+
+    def test_the_alternative_is_a_different_unit_with_its_own_floor(self):
+        for tile in self.alt_tiles():
+            self.assertNotEqual(tile["alt_unit"]["unit"], tile["unit"], tile["name"])
+            self.assertGreater(tile["alt_unit"]["min_span"], 0, tile["name"])
+
+    def test_the_column_keeps_the_name_of_the_unit_it_is_recorded_in(self):
+        """temp_C stays temp_C. The schema is two-sided -- columns.py and the sketch must
+        agree -- so a display unit must never reach the column list."""
+        for tile in self.alt_tiles():
+            for column, _label, _colour in tile["series"]:
+                self.assertNotIn(
+                    tile["alt_unit"]["unit"].replace("deg", ""), column.split("_")[-1:],
+                    column,
+                )
+
+    def test_fahrenheit_converts_correctly(self):
+        """Worth stating as arithmetic rather than trusting two constants to look right."""
+        alt = dict((t["name"], t["alt_unit"]) for t in self.alt_tiles())["temperature"]
+        for celsius, fahrenheit in ((0.0, 32.0), (100.0, 212.0), (-40.0, -40.0),
+                                    (21.5, 70.7)):
+            self.assertAlmostEqual(celsius * alt["mul"] + alt["add"], fahrenheit, places=6)
+
+
 class Bounds(unittest.TestCase):
     def test_the_window_bounds_are_ordered_and_sane(self):
         self.assertGreater(tiles.MIN_WINDOW_S, 0)

@@ -284,10 +284,20 @@ third-party URL, so it works with no network beyond loopback.
 
 Consequences of drawing client-side, all of which are the reason for it:
 
-- **Every tab is independent.** Its own ring buffers, its own window length, its own theme.
-  Two people can watch one capture over different spans, and neither sees the other's
-  cursor. This is why `main.py` has no `--window` or `--fps` to pass: neither is a property
-  of the capture, or even of the dashboard process.
+- **Every tab is independent.** Its own ring buffers, its own window length, its own theme,
+  its own units. Two people can watch one capture over different spans, and neither sees the
+  other's cursor. This is why `main.py` has no `--window` or `--fps` to pass: neither is a
+  property of the capture, or even of the dashboard process.
+- **Units are a display choice, and only that.** A tile may declare an `alt_unit` in
+  `tiles.py` — temperature declares Fahrenheit — and the header grows a toggle that switches
+  every such tile between the two, persisted per tab. The whole visible window converts, not
+  just the samples after the click, because the conversion happens on the way to the canvas
+  and the buffers hold what the board sent. Nothing converted ever reaches the wire or the
+  CSV: the column is called `temp_C` on both sides of a schema rule that says the two must
+  match, and a log whose units depended on what a browser was showing when it was written
+  would be unreadable a month later. The autoscale floor is declared separately for the
+  alternative unit, since 2 °C of noise floor is 3.6 °F of it and that is a judgement about
+  what counts as flat rather than a length to be converted.
 - **The server does no rendering.** It sits near 3% CPU with tabs attached, because all it
   does is reformat rows.
 - **Light and dark themes**, from `prefers-color-scheme` with a toggle that overrides it and

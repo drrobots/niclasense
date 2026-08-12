@@ -85,6 +85,11 @@ def build_spec(sample_hz=200.0, source=""):
                 "unit": tile["unit"],
                 "fmt": tile["fmt"],
                 "min_span": tile["min_span"],
+                # dict() rather than the declaration itself: this is about to be
+                # serialised, and handing the client a reference to a module-level mapping
+                # that it then owns is the kind of thing that stays harmless right up until
+                # something mutates it.
+                "alt_unit": dict(tile["alt_unit"]) if tile.get("alt_unit") else None,
                 "quaternion": bool(tile.get("quaternion")),
                 "bsec": tile["name"] in tiles.BSEC_TILES,
                 "placement": list(tiles.PLACEMENT[tile["name"]]),

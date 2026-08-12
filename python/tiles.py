@@ -35,6 +35,15 @@ FONT = "DejaVu Sans Mono"
 # sitting still gets scaled to its own quantization steps, which renders sensor noise as
 # dramatic staircases and reads as real signal. Each value is roughly the sensor's noise
 # floor, so a resting board looks flat and genuine motion still fills the tile.
+#
+# `alt_unit` is optional: a second unit the viewer can switch a tile into, as
+# {"unit", "mul", "add", "min_span"} applied to every series in the tile as
+# `value * mul + add`. It is a display choice and nothing else -- the wire, the CSV and the
+# column names stay in the unit the board reports, so a log means the same thing whoever
+# was watching it. The toggle is per tab, like the window length and the theme, which is
+# the same argument: two people can watch one capture and disagree about how to read it.
+# `mul` must be positive, since the client converts the extremes of a window rather than
+# every sample in it and relies on the order surviving.
 TILES = (
     {
         "name": "orientation",
@@ -94,6 +103,15 @@ TILES = (
         "unit": "degC",
         "fmt": "%.2f",
         "min_span": 2.0,
+        # Display only, and per tab: the wire and the CSV stay in Celsius, because the
+        # column is named temp_C on both sides of a schema rule that says the two must
+        # match. A file whose units depended on what a browser was showing when it was
+        # written would be unreadable a month later.
+        #
+        # min_span is restated rather than scaled from the one above, because it is a
+        # judgement about what counts as a flat line and not an arithmetic consequence:
+        # 2 degC of noise floor is 3.6 degF of it.
+        "alt_unit": {"unit": "degF", "mul": 1.8, "add": 32.0, "min_span": 3.6},
     },
     {
         "name": "humidity",

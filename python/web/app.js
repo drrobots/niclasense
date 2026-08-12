@@ -19,6 +19,7 @@
   var DEFAULT_WINDOW = 30;
   var THEME_KEY = "nicla-theme";
   var WINDOW_KEY = "nicla-window";
+  var UNITS_KEY = "nicla-alt-units";
 
   var spec = null;
   var colIndex = {};      // column name -> position in a sample row
@@ -27,6 +28,7 @@
   var tiles = [];         // one runtime entry per tile
   var capture = {};       // capture tile's DOM nodes
   var windowS = DEFAULT_WINDOW;
+  var altUnits = false;   // show tiles declaring an alt_unit in it, per tab
   var lastStatus = {};
   var dirty = false;      // samples have arrived since the last frame
 
@@ -150,6 +152,34 @@
     return text;
   }
 
+  // ---------------------------------------------------------------------
+  // Units
+  //
+  // A tile may declare an alt_unit in tiles.py, and the viewer switches every such tile
+  // between its declared unit and that one. Display only: the samples in `store` stay
+  // exactly as the board sent them, so the conversion cannot leak into anything that is
+  // recorded, and switching back is not lossy.
+
+  /* The active {mul, add, min_span, unit} for a tile, or null when it is showing the unit
+     its column is named in. */
+  function activeUnit(tileSpec) {
+    return altUnits && tileSpec.alt_unit ? tileSpec.alt_unit : null;
+  }
+
+  function convert(unit, value) {
+    return unit ? value * unit.mul + unit.add : value;
+  }
+
+  function unitLabel(tileSpec) {
+    var unit = activeUnit(tileSpec);
+    return unit ? unit.unit : tileSpec.unit;
+  }
+
+  function minSpan(tileSpec) {
+    var unit = activeUnit(tileSpec);
+    return unit ? unit.min_span : tileSpec.min_span;
+  }
+
   function thousands(value) {
     return Math.round(value || 0).toLocaleString("en-US");
   }
@@ -188,7 +218,7 @@
 
     var unit = document.createElement("span");
     unit.className = "tile-unit";
-    unit.textContent = tileSpec.unit;
+    unit.textContent = unitLabel(tileSpec);
 
     head.appendChild(title);
     head.appendChild(readout);
@@ -219,6 +249,7 @@
       node: node,
       chartNode: chart,
       readout: readout,
+      unit: unit,
       accuracy: accuracy,
       sub: sub,
       chart: null,
@@ -454,17 +485,21 @@
       var high = null;
       var latest = [];
 
+      var unit = activeUnit(tile.spec);
+
       tile.spec.series.forEach(function (item, index) {
         var column = store[item.column];
         var values = column.data;
         var ys = tile.scratch[index].subarray(0, drawn);
         for (var k = 0; k < drawn; k++) {
-          ys[k] = values[first + k * stride];
+          ys[k] = convert(unit, values[first + k * stride]);
         }
         data.push(ys);
 
         /* Min/max over every sample in the window, not over the strided points above --
-           see the note at the top of this file. */
+           see the note at the top of this file. Converted afterwards rather than inside
+           the loop: the conversion is affine with a positive multiplier, so it cannot
+           reorder the extremes, and this is the loop that runs over every sample. */
         var vmin = Infinity;
         var vmax = -Infinity;
         for (var i = first; i < column.n; i++) {
@@ -475,18 +510,23 @@
         if (vmin === Infinity) {
           return;
         }
-        latest.push([item.label, values[column.n - 1]]);
+        vmin = convert(unit, vmin);
+        vmax = convert(unit, vmax);
+        latest.push([item.label, convert(unit, values[column.n - 1])]);
         low = low === null ? vmin : Math.min(low, vmin);
         high = high === null ? vmax : Math.max(high, vmax);
       });
 
       if (low !== null) {
         /* Widen about the midpoint to the floor, so a quiet sensor reads as quiet instead
-           of being blown up to its own noise. */
-        if (high - low < tile.spec.min_span) {
+           of being blown up to its own noise. The floor comes from whichever unit is
+           showing: it is a judgement about what counts as flat, not a length that can be
+           converted along with the data. */
+        var floor = minSpan(tile.spec);
+        if (high - low < floor) {
           var middle = (high + low) / 2;
-          low = middle - tile.spec.min_span / 2;
-          high = middle + tile.spec.min_span / 2;
+          low = middle - floor / 2;
+          high = middle + floor / 2;
         }
         var span = high - low;
         tile.ylim = [low - span * 0.12, high + span * 0.12];
@@ -589,6 +629,50 @@
       applyTheme(next);
       button.textContent = next === "light" ? "dark" : "light";
     });
+
+    buildUnitsControl();
+  }
+
+  /* The units toggle, driven entirely by /spec: it appears only if some tile declares an
+     alt_unit, and it is labelled with the unit it would switch to rather than with
+     anything this file knows about temperature. Adding a second convertible tile in
+     tiles.py therefore needs no change here. */
+  function buildUnitsControl() {
+    var convertible = spec.tiles.filter(function (tileSpec) {
+      return !!tileSpec.alt_unit;
+    });
+    if (!convertible.length) {
+      return;
+    }
+
+    var button = document.getElementById("units");
+    var declared = convertible[0].unit;
+    var alternative = convertible[0].alt_unit.unit;
+
+    function label() {
+      /* The unit you would get by pressing it, which is the convention the theme button
+         next to it already uses. */
+      button.textContent = altUnits ? declared : alternative;
+    }
+
+    button.hidden = false;
+    label();
+    button.addEventListener("click", function () {
+      altUnits = !altUnits;
+      try {
+        localStorage.setItem(UNITS_KEY, altUnits ? "1" : "0");
+      } catch (e) { /* ignore */ }
+      label();
+      tiles.forEach(function (tile) {
+        if (tile.spec.alt_unit) {
+          tile.unit.textContent = unitLabel(tile.spec);
+        }
+      });
+      /* The next frame redraws from `store`, which was never converted, so the switch
+         costs nothing and the whole window changes units rather than only what arrives
+         after it. */
+      dirty = true;
+    });
   }
 
   function connect() {
@@ -677,6 +761,9 @@
     if (WINDOW_CHOICES.indexOf(savedWindow) !== -1) {
       windowS = savedWindow;
     }
+    /* Read here rather than in buildUnitsControl because the tiles are built before the
+       controls are, and a tile's unit label is written once at construction. */
+    altUnits = localStorage.getItem(UNITS_KEY) === "1";
   } catch (e) { /* ignore */ }
 
   fetch("/spec")

@@ -86,10 +86,13 @@ no entry point, which is what keeps `main.py` and `webdash.py` independent of ea
   end reuses the board parser.
 - `tiles.py` — the widget declarations. `TILES`, `PLACEMENT` on a 12-column grid, the
   palette, `BSEC_*`, `MAX_POINTS`, the window bounds. No renderer and no rendering, so
-  the browser server can import it and serve it as JSON — a test enforces that. Both
-  renderers read it; adding a tile here adds it to the live dashboard and the offline
-  viewer at once. Keep `min_span` on new tiles or a resting board autoscales its own
-  quantization noise into dramatic-looking staircases.
+  the browser server can import it and serve it as JSON — a test enforces that. The browser
+  client is the only thing that reads it now; adding a tile here adds it to the dashboard.
+  Keep `min_span` on new tiles or a resting board autoscales its own
+  quantization noise into dramatic-looking staircases. An optional `alt_unit`
+  (`{unit, mul, add, min_span}`) gives a tile a second unit the viewer can toggle into —
+  temperature offers degF. Display only, and it must stay that way: the column is named for
+  the unit it is *recorded* in, and the schema rule binds that name to the sketch.
 - `webhub.py` / `webdash.py` / `web/` — the dashboard, and the only live viewer. Attach-only:
   it never opens the serial port. Stdlib `ThreadingHTTPServer` + Server-Sent Events on
   `127.0.0.1`, and a client that draws with vendored uPlot. The server renders nothing; the
