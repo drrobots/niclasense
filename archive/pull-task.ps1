@@ -3,18 +3,27 @@
     Registers (or removes) the scheduled task that pulls capture logs into the archive.
 
 .DESCRIPTION
-    Runs on the viewer machine only. One task, pulling from every capture in sources.txt.
+    Runs on one always-on collector machine -- not on a capture, and not on the desktops
+    people read from. One task, pulling from every capture in sources.txt onto the share.
+
+    Three roles, and it is worth being clear which machine is which. A capture records to its
+    own disk and offers it read-only. This collector copies from all of them to the share.
+    Anyone reading points viewer.cmd at that share. Nothing but the collector needs to see
+    more than one machine.
 
     Why SYSTEM rather than a service account with a stored password. A task running as
-    SYSTEM reaches the network as the machine account -- DOMAIN\THISBOX$ -- so read access
-    to each capture's share is granted to that account, or to a group holding it, and there
-    is no password anywhere on disk or in the task definition. It is the same trick the
-    capture service uses to stay LocalSystem, and it means nothing here has to be rotated.
+    SYSTEM reaches the network as the machine account -- DOMAIN\THISBOX$ -- so it is that
+    account, or a group holding it, that needs read on each capture's share and **write** on
+    the archive share. There is no password anywhere on disk or in the task definition. It is
+    the same trick the capture service uses to stay LocalSystem, and nothing here has to be
+    rotated.
 
     The repetition rides on a startup trigger rather than a logon one. Nobody needs to be
-    signed in to the viewer machine for the archive to keep filling, which is the difference
-    between this and the dashboard's logon task -- that one exists to put a window in front
-    of a person, and this one exists whether or not anyone is looking.
+    signed in for the archive to keep filling, which is the difference between this and the
+    dashboard's logon task -- that one exists to put a window in front of a person, and this
+    one exists whether or not anyone is looking. A collector that is off simply misses
+    copies; the next run collects them, because nothing here deletes and robocopy skips what
+    it already has.
 
 .PARAMETER ArchiveRoot
     Directory to pull into. Passed straight to pull-logs.ps1.
@@ -26,9 +35,9 @@
     Remove the task instead of creating it.
 
 .EXAMPLE
-    .\pull-task.ps1 -ArchiveRoot D:\NiclaArchive
-    .\pull-task.ps1 -ArchiveRoot D:\NiclaArchive -EveryMinutes 15
-    .\pull-task.ps1 -ArchiveRoot D:\NiclaArchive -Uninstall
+    .\pull-task.ps1 -ArchiveRoot \\fileserver\NiclaLogs
+    .\pull-task.ps1 -ArchiveRoot \\fileserver\NiclaLogs -EveryMinutes 15
+    .\pull-task.ps1 -ArchiveRoot \\fileserver\NiclaLogs -Uninstall
 #>
 [CmdletBinding()]
 param(
@@ -89,4 +98,5 @@ Register-ScheduledTask -TaskPath $TaskPath -TaskName $TaskName `
     -Force | Out-Null
 
 Write-Output ("registered {0}{1}: every {2} minute(s) -> {3}" -f $TaskPath, $TaskName, $EveryMinutes, $ArchiveRoot)
-Write-Output "grant this machine's account read access on each capture share (see README.md)"
+Write-Output "grant this machine's account read on each capture share and write on the archive"
+Write-Output "  (see README.md)"

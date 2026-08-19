@@ -18,7 +18,8 @@
     being told separately what boards exist -- there is no second list to keep in step.
 
 .PARAMETER ArchiveRoot
-    Directory to pull into. One subdirectory per source is created beneath it.
+    Directory to pull into, normally the UNC path of the share the viewers read. One
+    subdirectory per source is created beneath it, and those names are the board list.
 
 .PARAMETER Sources
     Machine list. Defaults to sources.txt beside this script.
@@ -141,8 +142,20 @@ function Copy-Source($Entry, [string] $Root) {
 }
 
 # -- run -----------------------------------------------------------------------------------
+
+# The destination is checked as deliberately as the sources are, because it is now normally a
+# share too. An unreachable one would otherwise surface as whatever New-Item throws, from a
+# scheduled task nobody is watching, and the difference between "the share is down" and "the
+# account cannot write there" is most of the diagnosis.
 if (-not (Test-Path -LiteralPath $ArchiveRoot)) {
-    New-Item -ItemType Directory -Path $ArchiveRoot -Force | Out-Null
+    try {
+        New-Item -ItemType Directory -Path $ArchiveRoot -Force -ErrorAction Stop | Out-Null
+    } catch {
+        Write-Line ("FAILED       cannot reach or create {0}" -f $ArchiveRoot)
+        Write-Line ("             {0}" -f $_.Exception.Message)
+        Write-Line "             the share is unmounted, or this account cannot write to it"
+        exit 2
+    }
 }
 
 $entries = Read-Sources $Sources

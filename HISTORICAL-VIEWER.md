@@ -131,28 +131,32 @@ whole on/off switch and the reason it is not a silent background task.
 
 ## Getting the files there
 
-**The sensors write to the share directly.** Each into its own subdirectory, which is not a
-convention but a requirement: a capture is named only for the second it started, so two
-boards writing into one folder will eventually pick the same filename. The subdirectory
-names are also the board list, so the layout does both jobs at once.
+**Captures write locally; a collector copies to the share.** Three roles: a capture records
+to its own disk and offers it read-only, one always-on collector copies from all of them onto
+the share, and readers point `viewer.cmd` at that share.
 
-That trades robustness for simplicity, and the trade is worth stating. A capture writing
-across a network stops recording when the network hiccups, where a local write and a copy
-afterwards would have ridden it out. `archive/` holds the scripts for that other
-arrangement — a read-only share per capture and a scheduled pull — and they are kept
-because the choice is reversible, not because anything now uses them.
+Writing locally rather than straight to the share is the point of the arrangement. A capture
+writing across a network stops recording when the network hiccups; this way it is the copy
+that fails, and nothing is lost because the next run collects what the last one missed.
 
-The rest of this section describes that unused arrangement.
+Each sensor lands in its own subdirectory, which is a requirement and not a convention: a
+capture is named only for the second it started, so two boards writing into one folder will
+eventually pick the same filename. Those subdirectory names are also the board list, so the
+layout does both jobs at once.
 
-Captures keep writing locally. A scheduled `robocopy` on the viewer machine pulls from
-read-only shares on each capture, against the same hard-coded list of machines the viewer
-draws from.
+A scheduled `robocopy` on the collector pulls from a read-only share on each capture, against
+the hard-coded list in `sources.txt`. That list lives on the collector and nowhere else —
+readers learn which boards exist from the directories on the share.
 
 Pull rather than push: one job to maintain instead of one per capture, and the capture
 machines stay read-only with no write access to a shared archive and no scheduled task of
-their own. Pointing `--csv` at a UNC path directly would look tidier and is a trap — a
-network hiccup would break recording, and `retention.py`'s rule about never deleting the
-file being written gets harder to reason about across a network.
+their own. Pointing `--csv` at a UNC path directly would look tidier and is the trap this
+arrangement exists to avoid — a network hiccup would break recording, and `retention.py`'s
+rule about never deleting the file being written gets harder to reason about across a
+network.
+
+The collector is the only account that writes to the share. It runs as SYSTEM, so what needs
+granting is its machine account: read on each capture's share, write on the archive.
 
 The tolerated lag is minutes, which is what makes a sync step possible at all. It also
 happens to cost nothing: `main.py` sets `flush_every = max(1, int(log_rate))`, so at 1/60 Hz

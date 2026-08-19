@@ -4,6 +4,15 @@ Windows-only, and separate from `packaging/`: that installs a capture machine, t
 the one machine that collects from them. Three scripts, no Python, nothing new on the
 capture side beyond a read-only share.
 
+**Three roles.** A *capture* records to its own disk and offers it read-only. The *collector*
+copies from all of them onto the share, on a schedule. *Readers* point `viewer.cmd` at that
+share and never see a capture machine at all. Only the collector needs to know that more
+than one sensor exists.
+
+Captures write locally rather than straight to the share on purpose: a capture writing across
+a network stops recording when the network hiccups, and this way the copy is what fails
+instead. Nothing is lost, because the next run collects what the last one missed.
+
 The design and the reasoning behind it are in `HISTORICAL-VIEWER.md`. The short version is
 that a viewer reading files needs no inbound port on any capture machine, gets its cross-board
 time alignment from `host_iso` for free, and lets AD do the authentication.
@@ -13,27 +22,31 @@ time alignment from `host_iso` for free, and lets AD do the authentication.
 | Script | Machine | When |
 |---|---|---|
 | `share-logs.ps1` | every capture | once, elevated |
-| `pull-task.ps1` | the viewer machine | once, elevated |
-| `pull-logs.ps1` | the viewer machine | by the task, every few minutes |
+| `pull-task.ps1` | the collector | once, elevated |
+| `pull-logs.ps1` | the collector | by the task, every few minutes |
 
 ## Setting it up
 
-**On each capture machine**, publish the logs read-only. `VIEWERBOX$` is the viewer
-machine's account — the trailing `$` is not a typo, it is how a machine account is named,
-and it is what lets the pull run without a password stored anywhere:
+**On each capture machine**, publish the logs read-only. `COLLECTOR$` is the collector's
+machine account — the trailing `$` is not a typo, it is how a machine account is named, and
+it is what lets the pull run without a password stored anywhere:
 
 ```powershell
-.\share-logs.ps1 -ReadAccount "CONTOSO\VIEWERBOX$"
+.\share-logs.ps1 -ReadAccount "CONTOSO\COLLECTOR$"
 ```
 
 It prints the line to add to `sources.txt`. Once there is more than one thing reading,
 grant a group instead and put the machine accounts in that.
 
-**On the viewer machine**, list the captures and register the task:
+**On the archive share**, grant that same collector account **write** access. It is the one
+account that writes there; everyone else needs only read, and read is what decides who may
+look at the logs.
+
+**On the collector**, list the captures and register the task:
 
 ```powershell
 Copy-Item sources.example.txt sources.txt   # then edit it
-.\pull-task.ps1 -ArchiveRoot D:\NiclaArchive
+.\pull-task.ps1 -ArchiveRoot \\fileserver\NiclaLogs
 ```
 
 Run `pull-logs.ps1` by hand first to see it work — it reports each source on its own line and
@@ -42,7 +55,7 @@ writes the same to `pull-logs.log` in the archive root.
 ## What lands where
 
 ```
-D:\NiclaArchive\
+\\fileserver\NiclaLogs\
     bench\      nicla_20260819_085534.csv ...
     rig-a\      ...
     rig-b\      ...
@@ -51,7 +64,10 @@ D:\NiclaArchive\
 
 One directory per source, named from `sources.txt`. **That layout is the board list.**
 Whatever reads the archive enumerates directories rather than being handed a separate list,
-so there is nothing to keep in step.
+so there is nothing to keep in step — and it is also what stops two sensors colliding, since
+a capture is named only for the second it started.
+
+This is the path readers put in `viewer.conf`.
 
 ## What it will not do
 
@@ -75,6 +91,10 @@ already has. If it is *always* unreachable, check File and Printer Sharing is al
 through the capture's firewall for the domain or private profile; `share-logs.ps1
 -OpenFirewall` will enable it, and it is off by default because on a managed fleet that is
 usually policy's job.
+
+**The run fails before it starts, naming the archive.** The share is not mounted on the
+collector, or the collector's machine account cannot write to it. The task runs as SYSTEM, so
+the account to grant is `DOMAIN\COLLECTOR$`.
 
 **A source says `FAILED` with a robocopy exit code.** The share answered and then could not
 be read — usually the account in `-ReadAccount` is not the one the task runs as. The task

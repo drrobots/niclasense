@@ -115,6 +115,13 @@ class RunsWithoutAPassword(unittest.TestCase):
         """So it reaches the network as the machine account and no credential is stored."""
         self.assertIn("SYSTEM", self.task)
 
+    def test_it_says_what_the_collector_account_needs(self):
+        """Read on each capture and write on the archive, granted to a machine account whose
+        name ends in $. Whoever runs this once, months from now, gets told rather than having
+        to work out why every source says FAILED."""
+        self.assertIn("read", self.task.lower())
+        self.assertIn("write", self.task.lower())
+
     def test_no_password_is_ever_taken_or_stored(self):
         for forbidden in ("-Password", "ConvertTo-SecureString", "PSCredential"):
             self.assertNotIn(forbidden, self.task)
@@ -271,6 +278,23 @@ class Behaviour(unittest.TestCase):
         )
         self.assertNotEqual(done.returncode, 0)
         self.assertIn("no source list", done.stdout + done.stderr)
+
+    def test_an_unreachable_archive_says_which_of_the_two_things_it_is(self):
+        """The destination is a share now, so it can be down or merely unwritable, and the
+        difference is most of the diagnosis. Without this it surfaces as whatever New-Item
+        threw, out of a scheduled task nobody is watching."""
+        archive = "/System/nope/archive"        # exists on no machine and cannot be created
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-File", self.script,
+             "-ArchiveRoot", archive,
+             "-Sources", self.sources("bench   /nonexistent/bench\n"),
+             "-LogPath", os.path.join(self.root, "pull.log")],
+            capture_output=True, text=True, timeout=120,
+        )
+        output = done.stdout + done.stderr
+        self.assertIn("cannot reach or create", output)
+        self.assertIn("unmounted", output)
+        self.assertNotEqual(done.returncode, 0)
 
     def test_a_name_that_is_not_a_directory_name_is_refused(self):
         """It becomes a directory unmodified, so it is checked before it can become a path
