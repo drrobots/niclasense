@@ -401,7 +401,30 @@ instead of the board. Attach and detach as often as you like — the capture nev
 # ...or a capture on another port, or another machine
 ../.venv/bin/python webdash.py 8790
 ../.venv/bin/python webdash.py bench.local:8765
+
+# ...or serve the dashboard itself to other machines
+../.venv/bin/python webdash.py --http-host 0.0.0.0
 ```
+
+### Letting other machines open the dashboard
+
+`--http-host` binds the dashboard somewhere other than loopback, and `main.py --plot`
+forwards it. Before using it, be clear about what it does: **there is no authentication on
+the dashboard**, so anyone who can route to the port gets a live feed of the sensor data and
+the CSV path it is being written to. On a trusted network that is often fine. It is not a
+thing to do on a network you do not control.
+
+Two properties keep the blast radius to what you actually chose:
+
+- **Prefer a specific address to `0.0.0.0`.** `--http-host 192.168.1.5` serves one interface;
+  the wildcard serves every one the machine has, including any you forgot about.
+- **A `Host` allowlist is enforced on every route.** Bare addresses and `localhost` always
+  pass; any other name is refused with a 403 that names the flag to fix it. This is the
+  DNS-rebinding guard — without it, binding a LAN address would also expose the dashboard to
+  any web page the person sitting at that machine happens to open, which is a far larger
+  audience than the LAN. If you reach the dashboard by name, pass `--allow-host nicla-01.lan`.
+
+On Windows the dashboard is a logon task rather than a command line; see `packaging/README.md`.
 
 Points worth knowing:
 

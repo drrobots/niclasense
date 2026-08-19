@@ -21,6 +21,7 @@ Examples:
     python webdash.py                        # in another: this, then open the URL
     python webdash.py --open                 # ... and open a browser at it
     python webdash.py 8790 --http-port 9100  # a capture elsewhere, served elsewhere
+    python webdash.py --http-host 0.0.0.0    # ... and let other machines open it
 """
 
 import argparse
@@ -87,6 +88,16 @@ def main(argv=None):
         help="Port to serve the dashboard on.",
     )
     parser.add_argument(
+        "--http-host", default="127.0.0.1", metavar="ADDR",
+        help="Address to serve the dashboard on. The default keeps it on this machine; "
+             "give a LAN address (or 0.0.0.0) to let other machines open it.",
+    )
+    parser.add_argument(
+        "--allow-host", action="append", default=[], metavar="NAME",
+        help="A host name the dashboard will answer to, beyond localhost and bare "
+             "addresses. Needed only if you reach it by name. Repeatable.",
+    )
+    parser.add_argument(
         "--open", action="store_true", help="Open a browser at the dashboard.",
     )
     args = parser.parse_args(argv)
@@ -110,9 +121,20 @@ def main(argv=None):
     # stream_hz comes out of the board's banner, which the logger forwards, so the page
     # sizes its ring buffers for the rate actually being served rather than a guess.
     spec = build_spec(sample_hz=source.stream_hz or 200.0, source=source.describe())
-    # Bound to 127.0.0.1 and not configurable: this serves an unauthenticated live feed of
-    # someone's sensor data, and a --bind flag is an invitation to put that on a network.
-    hub = WebHub(port=args.http_port, spec=spec)
+    # Bound to 127.0.0.1 by default, and that default is the security model: this serves an
+    # unauthenticated live feed of someone's sensor data, and nothing here asks who is
+    # asking. --http-host exists because reaching the dashboard from another machine is a
+    # real need that the alternatives answer badly -- a second Python install on every
+    # viewing machine, or an SSH tunnel per viewer -- but it is a deliberate act, not a
+    # default, and moving it off loopback puts the feed in front of everyone who can route
+    # to this port.
+    #
+    # What comes with it is the Host allowlist in webhub.host_allowed(). Binding a LAN
+    # address would otherwise expose the dashboard to any page the person at this machine
+    # happens to visit, via DNS rebinding, which is a much wider audience than "the
+    # network" and not one anybody means to invite.
+    hub = WebHub(host=args.http_host, port=args.http_port, spec=spec,
+                 allowed_hosts=args.allow_host)
     try:
         hub.start()
     except OSError as exc:
@@ -128,6 +150,10 @@ def main(argv=None):
 
     print("serving %s -- Ctrl-C to stop; the capture keeps running" % hub.url())
     print("every tab gets its own buffers, window and theme")
+    if hub.public:
+        # Worth a line on stdout every time. A dashboard that is quietly reachable from
+        # the rest of the network is exactly the thing someone should be reminded of.
+        print("reachable from the network on %s -- there is no password on it" % args.http_host)
     if args.open:
         webbrowser.open(hub.url())
 

@@ -132,6 +132,12 @@ The same `rpartition` is why `parse_endpoint("host:80:80")` yields a host called
 rather than an error. That one is defensible — the failure lands at connect time with the
 bad host named — but it is the same coin.
 
+`--http-host` made this reachable rather than theoretical: it is now possible to *ask* for an
+IPv6 bind, and `_Server` is `AF_INET` like everything else, so it fails at `start()`. The
+error names the cause now instead of blaming a second dashboard, which is a signpost and not
+a fix. Making the project IPv6-aware is one `address_family` on `_Server`, one on
+`SampleHub`, and a decision about dual-stack that nobody has needed to make yet.
+
 ## 5. `--rate` is silently ignored for a non-serial source
 
 The `isinstance(source, SerialSource)` guard is correct: there is no board to ask. But a
@@ -159,6 +165,24 @@ rather than a fixture, so a Python release that changes `_actions` fails there r
 in someone's overnight config file. Worth leaving as it is, with the exposure written down.
 
 ---
+
+## 8. Nothing authenticates the dashboard
+
+`--http-host` can put the dashboard on a network, and there is no password, token or ACL on
+it: anything that can route to the port can read the live feed, the CSV path, and the board
+banner. The `Host` allowlist in `webhub.host_allowed()` is often mistaken for a fix and is
+not one — it stops DNS rebinding, which is a different attack from someone on the same
+network simply opening the page.
+
+This is deliberate as far as it goes. The alternative, in a project whose only dependency is
+pyserial, is either hand-rolled auth over plaintext HTTP — which mostly buys the *appearance*
+of protection — or a TLS story with certificates on every viewing machine, which is a great
+deal of apparatus for a sensor plot. Loopback stays the default for exactly this reason, and
+the flag is documented as the deliberate act it is.
+
+What would change the calculus: a deployment where the capture machine is not on a network
+its operator controls. At that point the answer is a reverse proxy that terminates TLS and
+authenticates, not something grown in `webhub.py`.
 
 ## Not a shortfall, but worth recording
 

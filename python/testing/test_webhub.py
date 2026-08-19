@@ -19,7 +19,8 @@ from http.client import HTTPConnection
 import support
 import tiles
 from columns import COLUMNS
-from webhub import MAX_BATCH, PRIME_ROWS, WebHub, build_spec
+from webhub import (MAX_BATCH, PRIME_ROWS, WebHub, build_spec, host_allowed,
+                    host_header_name, is_address_literal)
 
 
 class Spec(unittest.TestCase):
@@ -320,9 +321,100 @@ class PortInUse(unittest.TestCase):
 
 class Binding(unittest.TestCase):
     def test_the_default_is_loopback(self):
-        """Deliberate and not configurable: this serves an unauthenticated live feed of
-        someone's sensor data, and a --bind flag is an invitation to put it on a network."""
+        """The default is the security model. --http-host can move it, because reaching a
+        dashboard from another machine is a real need, but nothing here asks who is asking,
+        so staying on loopback until somebody says otherwise is the whole protection."""
         self.assertEqual(WebHub().host, "127.0.0.1")
+        self.assertFalse(WebHub().public)
+
+    def test_an_explicit_address_is_honoured(self):
+        hub = WebHub(host="0.0.0.0")
+        self.assertEqual(hub.host, "0.0.0.0")
+        self.assertTrue(hub.public)
+
+    def test_a_wildcard_bind_reports_an_address_a_browser_can_use(self):
+        """Nobody can open http://0.0.0.0/, and the point of binding it was that someone
+        elsewhere would open it, so url() has to answer with a routable address."""
+        url = WebHub(host="0.0.0.0", port=8988).url()
+        self.assertNotIn("0.0.0.0", url)
+        self.assertTrue(url.endswith(":8988/"))
+
+    def test_loopback_still_reports_itself(self):
+        self.assertEqual(WebHub(port=8988).url(), "http://127.0.0.1:8988/")
+
+
+class HostHeaderParsing(unittest.TestCase):
+    def test_the_port_is_dropped_and_the_name_lowercased(self):
+        self.assertEqual(host_header_name("Nicla-01.LAN:8988"), "nicla-01.lan")
+
+    def test_an_ipv6_literal_survives_its_brackets(self):
+        """Splitting a bracketed literal on ":" the way a name is split returns "[", which
+        would then match nothing and lock out a legitimately bound IPv6 dashboard."""
+        self.assertEqual(host_header_name("[::1]:8988"), "::1")
+        self.assertEqual(host_header_name("[fe80::1]"), "fe80::1")
+
+    def test_missing_or_malformed_headers_yield_nothing(self):
+        self.assertEqual(host_header_name(None), "")
+        self.assertEqual(host_header_name(""), "")
+        self.assertEqual(host_header_name("[::1"), "")
+
+    def test_address_literals_are_recognised(self):
+        for value in ("127.0.0.1", "192.168.1.5", "::1", "fe80::1"):
+            self.assertTrue(is_address_literal(value), value)
+        for value in ("localhost", "nicla-01.lan", "evil.example.com", ""):
+            self.assertFalse(is_address_literal(value), value)
+
+
+class HostAllowlist(unittest.TestCase):
+    """The DNS-rebinding guard. Rebinding needs a *name* to re-resolve, so the rule is that
+    addresses are always fine and names have to have been asked for."""
+
+    def test_addresses_and_localhost_are_always_allowed(self):
+        for value in ("127.0.0.1:8988", "192.168.1.5:8988", "[::1]:8988", "localhost:8988"):
+            self.assertTrue(host_allowed(value), value)
+
+    def test_an_unknown_name_is_refused(self):
+        self.assertFalse(host_allowed("evil.example.com"))
+        self.assertFalse(host_allowed("nicla-01.lan"))
+
+    def test_a_named_host_is_allowed_once_asked_for(self):
+        self.assertTrue(host_allowed("nicla-01.lan:8988", {"nicla-01.lan"}))
+
+    def test_a_missing_header_is_refused(self):
+        self.assertFalse(host_allowed(None))
+        self.assertFalse(host_allowed(""))
+
+    def test_names_are_normalised_when_the_hub_takes_them(self):
+        """They arrive from a command line and an INI file, so case and stray whitespace
+        are the caller's habits rather than anything to hold against them."""
+        hub = WebHub(allowed_hosts=[" Nicla-01.LAN ", "", "  "])
+        self.assertEqual(hub.allowed_hosts, frozenset(["nicla-01.lan"]))
+
+
+class HostEnforcement(ServerFixture):
+    def _get_with_host(self, host_header, path="/spec"):
+        conn = HTTPConnection("127.0.0.1", self.port, timeout=5.0)
+        self.addCleanup(conn.close)
+        conn.putrequest("GET", path, skip_host=True)
+        conn.putheader("Host", host_header)
+        conn.endheaders()
+        response = conn.getresponse()
+        return response.status, response.read()
+
+    def test_a_rebound_name_is_refused_on_every_route(self):
+        for path in ("/", "/spec", "/stream", "/app.js"):
+            status, _body = self._get_with_host("evil.example.com", path)
+            self.assertEqual(status, 403, path)
+
+    def test_the_refusal_says_how_to_fix_it(self):
+        """Whoever meets this is far more likely to be the person who put a name in front
+        of the dashboard than an attacker, and a bare 403 tells them nothing."""
+        _status, body = self._get_with_host("nicla-01.lan")
+        self.assertIn(b"--allow-host nicla-01.lan", body)
+
+    def test_an_address_is_served_as_before(self):
+        status, _body = self._get_with_host("127.0.0.1:%d" % self.port)
+        self.assertEqual(status, 200)
 
 
 if __name__ == "__main__":

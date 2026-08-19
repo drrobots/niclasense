@@ -483,6 +483,44 @@ class ReplayPacing(unittest.TestCase):
             any(b < a for a, b in zip(times, times[1:])), "t_ms never went backwards"
         )
 
+class ViewerArguments(unittest.TestCase):
+    """What --plot hands its child. The bind address has to make the trip: it is a property
+    of the dashboard process rather than of a tab, so unlike window length there is nobody
+    downstream who could ask for it instead."""
+
+    def argv_for(self, **kwargs):
+        import main
+        recorded = []
+
+        class FakePopen(object):
+            def __init__(self, argv):
+                recorded.append(argv)
+
+        original = main.subprocess.Popen
+        main.subprocess.Popen = FakePopen
+        try:
+            main.launch_viewer("127.0.0.1:8765", 8988, **kwargs)
+        finally:
+            main.subprocess.Popen = original
+        return recorded[0]
+
+    def test_the_default_stays_on_loopback(self):
+        argv = self.argv_for()
+        self.assertIn("--http-host", argv)
+        self.assertEqual(argv[argv.index("--http-host") + 1], "127.0.0.1")
+
+    def test_the_bind_address_reaches_the_child(self):
+        argv = self.argv_for(http_host="0.0.0.0")
+        self.assertEqual(argv[argv.index("--http-host") + 1], "0.0.0.0")
+
+    def test_every_allowed_name_reaches_the_child(self):
+        argv = self.argv_for(allow_hosts=["nicla-01.lan", "nicla-02.lan"])
+        pairs = [argv[i + 1] for i, item in enumerate(argv) if item == "--allow-host"]
+        self.assertEqual(pairs, ["nicla-01.lan", "nicla-02.lan"])
+
+    def test_no_names_means_no_flags(self):
+        self.assertNotIn("--allow-host", self.argv_for())
+
 
 if __name__ == "__main__":
     unittest.main()

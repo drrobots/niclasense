@@ -20,9 +20,11 @@ The rows on the wire are the board's own CSV, produced by hub.format_sample(), s
 browser parses exactly what nc would show and there is only one wire format in the project.
 """
 
+import errno
 import json
 import os
 import queue
+import socket
 import socketserver
 import threading
 import time
@@ -110,6 +112,80 @@ def build_spec(sample_hz=200.0, source=""):
     }
 
 
+# -- binding, and who is allowed to ask ----------------------------------------
+
+# Addresses meaning "every interface". Binding one is what puts the dashboard on a network,
+# and it is also what makes url() unusable without help: nobody can point a browser at
+# 0.0.0.0, so a wildcard bind has to be reported as an address someone can actually type.
+WILDCARD_HOSTS = ("", "0.0.0.0", "::")
+
+
+def primary_address():
+    """This machine's address on the network it would use to reach a stranger.
+
+    Asked of the routing table rather than of the resolver. Connecting a UDP socket sends
+    no packet -- it only fixes which interface one would leave by -- so this answers
+    without a DNS round trip, and so without the hang that server_bind() below takes such
+    care to avoid. The destination is TEST-NET-1, an address reserved for never being
+    routed anywhere.
+    """
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(("192.0.2.1", 1))
+        return probe.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        probe.close()
+
+
+def host_header_name(value):
+    """The name or address out of a Host header: lowercased, and without its port."""
+    if not value:
+        return ""
+    value = value.strip()
+    # An IPv6 literal arrives bracketed -- [::1]:8988 -- and splitting that on ":" the way
+    # a name is split would return "[".
+    if value.startswith("["):
+        end = value.find("]")
+        return value[1:end].lower() if end != -1 else ""
+    return value.split(":", 1)[0].lower()
+
+
+def is_address_literal(name):
+    """Whether a Host is a bare IP address rather than a name."""
+    for family in (socket.AF_INET, socket.AF_INET6):
+        try:
+            socket.inet_pton(family, name)
+            return True
+        except (OSError, ValueError):
+            pass
+    return False
+
+
+def host_allowed(value, extra=()):
+    """Whether a request's Host header is one this dashboard will answer to.
+
+    This is the DNS-rebinding guard, and its rule is narrow on purpose. A page on another
+    site cannot read a cross-origin response, so the way it would reach a server inside
+    your network is to make the browser believe that site's *own* name resolves here, and
+    let same-origin do the rest. That attack needs a name to re-resolve, which is exactly
+    what it cannot mount against a bare address. So an address literal is always allowed,
+    localhost is always allowed, and any other name has to have been named by whoever
+    started the dashboard.
+
+    Which means the loopback default is not relying on this: a dashboard nobody can route
+    to is already safe. This is what keeps --http-host from being the invitation the old
+    comment here said it would be.
+    """
+    name = host_header_name(value)
+    if not name:
+        return False
+    if name == "localhost" or is_address_literal(name):
+        return True
+    return name in extra
+
+
 class _Server(ThreadingHTTPServer):
     # Otherwise a tab left open holds its /stream thread and the process never exits.
     daemon_threads = True
@@ -175,9 +251,16 @@ class WebHub(object):
     periodically, stop() at the end.
     """
 
-    def __init__(self, host="127.0.0.1", port=DEFAULT_HTTP_PORT, spec=None):
+    def __init__(self, host="127.0.0.1", port=DEFAULT_HTTP_PORT, spec=None,
+                 allowed_hosts=None):
         self.host = host
         self.port = port
+        # Names -- beyond localhost and bare addresses, which host_allowed() takes on its
+        # own -- that this dashboard will answer to. Normalised here rather than at every
+        # request: a Host header is compared against this set once per GET.
+        self.allowed_hosts = frozenset(
+            name.strip().lower() for name in (allowed_hosts or ()) if name.strip()
+        )
         self.spec = spec if spec is not None else build_spec()
         self._server = None
         self._thread = None
@@ -202,11 +285,19 @@ class WebHub(object):
         try:
             server = _Server((self.host, self.port), Handler)
         except OSError as exc:
-            raise OSError(
-                "cannot serve on %s:%d (%s). Another web dashboard is probably already "
-                "running -- open its page instead, or pass a different --http-port."
-                % (self.host, self.port, exc)
-            )
+            # The port being taken is the overwhelmingly common failure and has a specific
+            # remedy, but it stopped being the only one when --http-host arrived: an address
+            # this machine does not have, or an IPv6 one (which _Server cannot bind at all --
+            # see ARCHITECTURE-NOTES.md), fails here too. Telling someone to close another
+            # dashboard when they mistyped an address sends them somewhere with nothing in it.
+            if exc.errno == errno.EADDRINUSE:
+                hint = ("Another web dashboard is probably already running -- open its page "
+                        "instead, or pass a different --http-port.")
+            else:
+                hint = ("Check --http-host names an address this machine actually has. Note "
+                        "that IPv6 addresses cannot be bound.")
+            raise OSError("cannot serve on %s:%d (%s). %s"
+                          % (self.host, self.port, exc, hint))
         self._server = server
         self._stop.clear()
         self._thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -236,7 +327,23 @@ class WebHub(object):
             return len(self._clients)
 
     def url(self):
-        return "http://%s:%d/" % (self.host, self.port)
+        """A URL that can actually be opened.
+
+        A wildcard bind has no one address to report, so report the address a browser
+        elsewhere on the network would use to get here -- that being the whole reason
+        somebody bound a wildcard in the first place.
+        """
+        host = self.host
+        if host in WILDCARD_HOSTS:
+            host = primary_address()
+        if ":" in host:  # an IPv6 literal has to be bracketed inside a URL
+            host = "[%s]" % host
+        return "http://%s:%d/" % (host, self.port)
+
+    @property
+    def public(self):
+        """Whether this is reachable from off the machine, for callers that warn about it."""
+        return self.host not in ("127.0.0.1", "::1", "localhost")
 
     # -- publishing ------------------------------------------------------------
 
@@ -315,6 +422,11 @@ class _StreamHandler(BaseHTTPRequestHandler):
         """
 
     def do_GET(self):
+        # Before routing, so it covers the page, the spec and the stream alike -- there is
+        # no route here cheap enough to be worth answering to an unrecognised name.
+        if not host_allowed(self.headers.get("Host"), self.hub_ref.allowed_hosts):
+            self._reject_host()
+            return
         path = self.path.split("?", 1)[0]
         if path == "/stream":
             self._serve_stream()
@@ -328,6 +440,26 @@ class _StreamHandler(BaseHTTPRequestHandler):
             self._serve_file(os.path.basename(path))
 
     # -- routes ----------------------------------------------------------------
+
+    def _reject_host(self):
+        """Refuse a request whose Host header this dashboard does not answer to.
+
+        Says what to do about it, because the person most likely to meet this page is not
+        an attacker but whoever put a hostname in front of the dashboard and now has to
+        work out why it went blank.
+        """
+        name = host_header_name(self.headers.get("Host"))
+        body = (
+            "This dashboard does not answer to the host name %r.\n"
+            "Restart it with --allow-host %s to let it.\n"
+            % (name, name or "<name>")
+        ).encode("utf-8")
+        self.send_response(403)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
 
     def _serve_json(self, payload):
         body = json.dumps(payload).encode("utf-8")

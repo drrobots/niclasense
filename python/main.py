@@ -121,6 +121,17 @@ def build_parser():
         help="Port for the dashboard --plot starts. Ignored without --plot.",
     )
     parser.add_argument(
+        "--http-host", default="127.0.0.1", metavar="ADDR",
+        help="Address for the dashboard --plot starts. The default keeps it on this "
+             "machine; a LAN address (or 0.0.0.0) lets other machines open it. Ignored "
+             "without --plot.",
+    )
+    parser.add_argument(
+        "--allow-host", action="append", default=[], metavar="NAME",
+        help="Host name that dashboard will answer to, beyond localhost and bare "
+             "addresses. Repeatable. Ignored without --plot.",
+    )
+    parser.add_argument(
         "--duration", type=float, default=0.0,
         help="Stop after this many seconds (0 = until interrupted).",
     )
@@ -163,7 +174,7 @@ def default_csv_path():
     return os.path.join("logs", "nicla_%s.csv" % stamp)
 
 
-def launch_viewer(endpoint, http_port):
+def launch_viewer(endpoint, http_port, http_host="127.0.0.1", allow_hosts=()):
     """Start webdash.py against our own socket. Returns the process, or None.
 
     A child rather than an import: the dashboard's HTTP server and its clients would
@@ -175,14 +186,19 @@ def launch_viewer(endpoint, http_port):
     Note what is *not* passed: window length and refresh rate. Those are per-tab in the
     browser dashboard rather than per-process, which is the point of it -- two tabs can
     watch this capture over different spans -- so there is nothing for the capture to say
-    about them.
+    about them. The bind address is passed, and belongs to the other category: it is a
+    property of the dashboard process, not of a tab, and there is no way for a tab to ask
+    to be reachable from somewhere else.
 
     A dashboard that will not start is reported and shrugged off. The samples are already
     reaching the CSV and the socket by the time we get here, and killing a good capture
     because its convenience viewer failed would be the wrong trade.
     """
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webdash.py")
-    argv = [sys.executable, script, endpoint, "--http-port", "%d" % http_port, "--open"]
+    argv = [sys.executable, script, endpoint, "--http-port", "%d" % http_port,
+            "--http-host", http_host, "--open"]
+    for name in allow_hosts:
+        argv += ["--allow-host", name]
     try:
         return subprocess.Popen(argv)
     except OSError as exc:
@@ -359,7 +375,8 @@ def main(argv=None):
         hub.broadcast,
     ])
 
-    viewer = launch_viewer(hub.describe(), args.http_port) if args.plot else None
+    viewer = (launch_viewer(hub.describe(), args.http_port, args.http_host, args.allow_host)
+              if args.plot else None)
 
     try:
         run_headless(source, drain, args.duration, hub, status, maintain=sweeper)

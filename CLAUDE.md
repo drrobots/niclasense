@@ -95,7 +95,12 @@ no entry point, which is what keeps `main.py` and `webdash.py` independent of ea
   the unit it is *recorded* in, and the schema rule binds that name to the sketch.
 - `webhub.py` / `webdash.py` / `web/` — the dashboard, and the only live viewer. Attach-only:
   it never opens the serial port. Stdlib `ThreadingHTTPServer` + Server-Sent Events on
-  `127.0.0.1`, and a client that draws with vendored uPlot. The server renders nothing; the
+  `127.0.0.1` by default, and a client that draws with vendored uPlot. `--http-host` moves
+  the bind off loopback so other machines can open it; that is a deliberate act, because
+  nothing here authenticates anything. What makes it survivable is the `Host` allowlist in
+  `webhub.host_allowed()` — address literals and `localhost` always pass, any other name
+  has to arrive via `--allow-host` — which is what stops a LAN bind from also exposing the
+  dashboard to every page the local user visits, by DNS rebinding. The server renders nothing; the
   page holds its own buffers, so every tab has its own window length and theme. `/spec`
   serves `tiles.py`, so the layout is never restated in JavaScript. The autoscale order in
   `app.js` matters — min/max over the *undecimated* window, widen to `min_span`, then pad
