@@ -198,7 +198,10 @@ class EventIndex(object):
             return cached[1]
         found = episodes(self.store.rows(capture))
         self.scans += 1
-        self._cache[key] = (stamp, found)
+        # A capture that could not be opened is not cached. Its size and mtime do not change
+        # when somebody fixes the permission, so an empty result would stick until restart.
+        if capture.path not in self.store.unreadable:
+            self._cache[key] = (stamp, found)
         return found
 
     def between(self, start=None, end=None, board=None):

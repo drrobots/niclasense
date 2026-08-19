@@ -117,6 +117,55 @@ class Windows(unittest.TestCase):
         self.assertTrue(self.make(T0, T0).overlaps())
 
 
+class Unreadable(ArchiveFixture):
+    """A share protected by AD can list what it will not open.
+
+    Directory readable, files not: a real state on a share with per-folder permissions, and
+    one where failing the whole query is the wrong answer -- the window spans every other
+    capture too. Skipping quietly is also wrong, because a partial archive that looks
+    complete is worse than one that says it is partial.
+    """
+
+    def setUp(self):
+        ArchiveFixture.setUp(self)
+        self.ok = self.capture(self.bench, T0, minutes=1)
+        self.denied = self.capture(self.bench, T0 + datetime.timedelta(hours=1), minutes=1)
+
+    def deny(self):
+        os.chmod(self.denied, 0o000)
+        self.addCleanup(os.chmod, self.denied, 0o644)
+
+    def test_one_denied_file_does_not_sink_the_query(self):
+        self.deny()
+        store = LogStore(self.root)
+        rows = [row for capture in store.captures(board="bench")
+                for row in store.rows(capture)]
+        self.assertTrue(rows, "the readable capture came back empty")
+
+    def test_it_is_reported_rather_than_silently_skipped(self):
+        self.deny()
+        store = LogStore(self.root)
+        for capture in store.captures(board="bench"):
+            list(store.rows(capture))
+        self.assertEqual(store.unreadable, {self.denied})
+
+    def test_nothing_is_reported_when_everything_is_readable(self):
+        store = LogStore(self.root)
+        for capture in store.captures(board="bench"):
+            list(store.rows(capture))
+        self.assertEqual(store.unreadable, set())
+
+    def test_a_file_that_vanished_is_the_same_case(self):
+        """A retention sweep on the capture can delete a file between the listing and the
+        read, and that is ordinary rather than exceptional."""
+        store = LogStore(self.root)
+        captures = store.captures(board="bench")
+        os.remove(self.denied)
+        rows = [row for capture in captures for row in store.rows(capture)]
+        self.assertTrue(rows)
+        self.assertEqual(len(store.unreadable), 1)
+
+
 class PlotTime(ArchiveFixture):
     """Rows carry two clocks, and the one to draw with is not the one in the file.
 

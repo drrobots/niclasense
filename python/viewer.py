@@ -124,6 +124,7 @@ class Handler(BaseHTTPRequestHandler):
         self._json({
             "events": [one.as_dict() for one in found],
             "count": len(found),
+            "unreadable": len(self.store_ref.unreadable),
             "from": start.isoformat() if start else None,
             "to": end.isoformat() if end else None,
             "board": board,
@@ -160,6 +161,10 @@ class Handler(BaseHTTPRequestHandler):
         )
         payload = as_payload(buckets, columns, seen)
         payload["board"] = board
+        # Files listed but not opened. On an AD-protected share a directory can be readable
+        # while its contents are not, and a partial archive that looks complete is worse than
+        # one that says it is partial.
+        payload["unreadable"] = len(self.store_ref.unreadable)
         payload["from"] = start.isoformat() if start else None
         payload["to"] = end.isoformat() if end else None
         self._json(payload)
@@ -221,6 +226,12 @@ class Handler(BaseHTTPRequestHandler):
         if strays:
             lines.append("")
             lines.append("not captures: %s" % ", ".join(strays))
+        if store.unreadable:
+            lines.append("")
+            lines.append("could not be read (%d):" % len(store.unreadable))
+            for path in sorted(store.unreadable):
+                lines.append("    %s" % path)
+            lines.append("check who this account is allowed to read on the share")
         lines += ["", "routes: / /spec /events /range /archive"]
         self._text(200, "\n".join(lines) + "\n")
 

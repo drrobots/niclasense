@@ -327,11 +327,13 @@
     }
     var age = (Date.now() - freshest.getTime()) / 60000;
     el.asof.textContent = "data as of " + clock(freshest) +
-      " · " + payload.rows + " rows" + (payload.downsampled ? " (enveloped)" : "");
-    /* The pull runs every few minutes, so anything much older than that is not the sync
+      " · " + payload.rows + " rows" + (payload.downsampled ? " (enveloped)" : "") +
+      (payload.unreadable ? " · " + payload.unreadable + " file(s) unreadable" : "");
+    /* The push runs every few minutes, so anything much older than that is not the copy
        being slow -- it is a capture that has stopped, and the page should not look the same
-       as when everything is working. */
-    el.asof.classList.toggle("stale", age > 15);
+       as when everything is working. Files this account cannot read count the same way: what
+       is on screen is not all there is, and that must not look like all there is. */
+    el.asof.classList.toggle("stale", age > 15 || payload.unreadable > 0);
   }
 
   /* -- controls ------------------------------------------------------------- */

@@ -103,6 +103,11 @@ class LogStore(object):
 
     def __init__(self, root):
         self.root = root
+        # Captures that were listed but could not be opened. On an AD-protected share that
+        # is a real state rather than a broken one -- a directory may be readable while the
+        # files in it are not -- and it has to be survivable *and* visible. Skipping quietly
+        # would show somebody a partial archive that looks complete.
+        self.unreadable = set()
 
     # -- what is there ---------------------------------------------------------
 
@@ -194,7 +199,16 @@ class LogStore(object):
         every steady row and never inside a burst. So the board clock only ever positions
         samples within one dense run, and cannot drift away from wall clock across a file.
         """
-        with open(capture.path, "r", newline="") as handle:
+        try:
+            handle = open(capture.path, "r", newline="")
+        except OSError:
+            # Denied, or vanished between the listing and now -- a retention sweep on the
+            # capture can delete a file this process has already seen. Neither is a reason to
+            # fail the whole query, which spans every other capture in the window.
+            self.unreadable.add(capture.path)
+            return
+
+        with handle:
             reader = csv.reader(handle)
             try:
                 header = next(reader)

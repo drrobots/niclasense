@@ -162,6 +162,41 @@ The tolerated lag is minutes, which is what makes a copy step possible at all. I
 nothing: `main.py` sets `flush_every = max(1, int(log_rate))`, so at 1/60 Hz every row is
 flushed as it is written.
 
+## What AD protecting the share means
+
+It is what the design assumes rather than a problem for it, and the three actors authenticate
+differently.
+
+**Each capture pushes as its machine account.** The task runs as SYSTEM, which reaches the
+network as `DOMAIN\MACHINE$`. That account -- or a group holding all of them -- is what needs
+write on the share. Nothing is stored, and nothing rotates that Windows does not rotate
+itself.
+
+**Each reader reads as themselves.** `viewer.cmd` runs in the person's own session, so the
+share sees that person and AD decides what they may open. This is the whole reason there is
+no authentication in `viewer.py`: it is not that the question was skipped, it is that the
+share already answers it, per person, with groups somebody is already maintaining.
+
+Three things follow that are worth knowing before they are discovered:
+
+- **Both ends must be domain-joined.** A workgroup capture has no domain identity for SYSTEM
+  to present, and the push will fail against an AD-protected share with no way to succeed
+  short of stored credentials, which this design exists to avoid.
+
+- **A grant to a user group does not cover the push.** SYSTEM arrives as a computer account,
+  so `Domain Computers`, or a group holding the specific machine accounts, is what to grant.
+  This is the most likely reason for a push that authenticates and then cannot write.
+
+- **Per-folder permissions change what people see, correctly.** The board list is the set of
+  directories a reader can see, so two people with different grants get different board
+  lists. That is the right behaviour and it is worth knowing it is happening.
+
+A directory can also be listable while its files are not. The viewer skips what it cannot
+open rather than failing the query -- the window spans every other capture too -- and reports
+the count, because a partial archive that looks complete is worse than one that says it is
+partial. The staleness stamp goes amber when it happens, for the same reason it does when a
+capture has stopped: what is on screen is not all there is.
+
 ## Security
 
 Better than the live route on every axis, mostly by not doing things.
