@@ -9,6 +9,7 @@ The helpers below exist because almost every test needs the same two things: a p
 27-column sample, and a TCP port nobody else is using.
 """
 
+import csv
 import os
 import socket
 import sys
@@ -119,3 +120,81 @@ def wait_for(predicate, timeout=5.0, interval=0.01):
             return True
         time.sleep(interval)
     return predicate()
+
+
+def write_capture(directory, started, minutes=5.0, moves=(), rate=1 / 60.0, name=None):
+    """Write one fleet-shaped capture into `directory` and return its path.
+
+    Real `AdaptiveDecimator` and real `CsvLogger`, driven with the numbers out of
+    `packaging/nicla.conf`, so the file has everything the archive readers have to cope
+    with: the trailing `burst` column, a row a minute of steady grid, full-rate runs where
+    something moved, and the uneven spacing that comes of the grid restarting after each
+    one. Synthesising the CSV by hand would produce a file that agrees with whatever the
+    reader already believes.
+
+    `moves` is a sequence of (start_s, duration_s) describing when to shake the board. They
+    are the ground truth an episode test asserts against.
+
+    `started` only names the file. The rows carry whatever wall clock the logger stamped
+    them with, which is now -- call `restamp` to put them where the name says they are.
+    """
+    from decimator import AdaptiveDecimator
+    from logger import CsvLogger
+
+    if name is None:
+        name = "nicla_%s.csv" % started.strftime("%Y%m%d_%H%M%S")
+    path = os.path.join(directory, name)
+
+    decimator = AdaptiveDecimator(rate=rate, hold=1.0, pre_roll=0.25, tau=0.5,
+                                  burst_rate=200.0)
+    log = CsvLogger(path, flush_every=1, mark_bursts=True)
+    log.open()
+    try:
+        for i in range(int(200 * 60 * minutes)):
+            t_ms = i * 5
+            seconds = t_ms / 1000.0
+            moving = any(at <= seconds < at + span for at, span in moves)
+            one = sample(
+                seq=i, t_ms=t_ms,
+                ax_g=1.45 if moving else 0.8243,
+                gx_dps=42.0 if moving else 0.0,
+                temp_C=26.7 + i * 1e-5,
+            )
+            for row, is_burst in decimator.feed(one):
+                log.write(row, burst=is_burst)
+    finally:
+        if getattr(log, "_handle", None) is not None:
+            log._handle.close()
+    return path
+
+
+def restamp(path, started):
+    """Rewrite a capture's host_iso from the board clock, beginning at `started`.
+
+    Necessary rather than tidy. CsvLogger stamps host_iso with the wall clock at the moment
+    it writes, and a fixture simulating five minutes of board time does it in a fifth of a
+    second -- so every row lands inside the same instant and any test about time windows
+    passes or fails for the wrong reason.
+
+    Rebuilding the stamp from t_ms is also the more faithful thing: on a real capture the
+    two track each other, because the rows are written as they arrive.
+    """
+    import datetime
+
+    with open(path, "r", newline="") as handle:
+        rows = list(csv.reader(handle))
+    if len(rows) < 2:
+        return path
+    header, body = rows[0], rows[1:]
+    t_ms_at = header.index("t_ms")
+    base = int(body[0][t_ms_at])
+    for row in body:
+        offset = int(row[t_ms_at]) - base
+        row[0] = (started + datetime.timedelta(milliseconds=offset)).isoformat(
+            timespec="milliseconds"
+        )
+    with open(path, "w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(header)
+        writer.writerows(body)
+    return path
