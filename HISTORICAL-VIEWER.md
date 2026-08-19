@@ -119,13 +119,18 @@ The tolerated lag is minutes, which is what makes a sync step possible at all. I
 happens to cost nothing: `main.py` sets `flush_every = max(1, int(log_rate))`, so at 1/60 Hz
 every row is flushed as it is written.
 
-**Mirror or archive** is the one real decision here. `robocopy /MIR` propagates deletions, so
-the central copy inherits the capture's 365-day and 4 GB horizon and stays bounded. A plain
-copy accumulates and becomes the real history, outliving what any single machine keeps. The
-archive is more useful for this purpose and is affordable — eight boards at rest is roughly
-800 MB a year — but size for bursts rather than for rest: `nicla.conf` puts a solid day of
-bursting at ~3.3 GB and caps each machine at 4 GB, so the honest worst case is about 4 GB per
-board.
+**Archive, not mirror** — decided. A plain copy rather than `robocopy /MIR`, so the central
+directory accumulates and becomes the real history, outliving the 365-day and 4 GB horizon
+that `retention.py` enforces on each capture machine. The point of the exercise is looking at
+what happened, and mirroring would mean the archive quietly forgets on the captures' schedule
+rather than on ours.
+
+Two things follow from that choice. Central disk is sized for bursts, not for rest: eight
+boards resting is roughly 800 MB a year, but `nicla.conf` puts a solid day of bursting at
+~3.3 GB and caps each machine at 4 GB, so plan against about 4 GB per board and give the
+archive its own headroom. And because nothing prunes it, the archive needs its own retention
+answer eventually — deliberately not `retention.py`, which is built to protect a capture's
+local disk and knows nothing about a directory being written to by a copy job.
 
 ## Security
 
@@ -143,9 +148,35 @@ payload discloses the capture's absolute CSV path, and no route sets
 What does **not** improve: a share full of sensor logs is still readable by whoever the share
 lets in. That is now an AD permissions question rather than a Python one, which is the point.
 
+## Testing this from a Mac
+
+Development is happening on a Mac, and the bulk of this is testable there — more so than the
+live route would have been, which is worth saying because it is a consequence of the design
+rather than luck. Pulling to a central directory puts the network on the far side of a
+directory boundary, so *the viewer never opens a socket to anything*. It reads a local
+directory, and a local directory is a local directory on either platform.
+
+Fixtures are the part that could have been awkward and isn't. Feeding synthetic samples
+through the real `AdaptiveDecimator` and `CsvLogger` with the settings out of
+`packaging/nicla.conf` produces a genuine fleet-shaped file — 29 columns, the `burst` flag,
+both densities — with no board attached and no Windows. Because the motion is synthetic, the
+episodes land at known times, which is exactly the ground truth the burst index needs to be
+tested against.
+
+A five-minute run of that generator is a useful thing to have looked at before writing any
+drawing code: two episodes totalling one second of movement produced 890 rows, against 5 rows
+for the five quiet minutes around them. Rendering that naively is what the two render modes
+exist to avoid.
+
+What cannot be tested here is the delivery step and the auth tier — `robocopy`, the scheduled
+task, share semantics, and IIS or AD if it comes to that. That is the same position
+`packaging/` is already in, and the same answer applies: check what can be checked statically
+in `test_packaging.py`, and let the Windows workflow and one real machine cover the rest. None
+of it is our code.
+
 ## Open questions
 
-- **Mirror or archive**, above. Everything else is decided.
+- Whether the archive's own retention is a policy, a script, or nothing for now.
 - Whether ranges are relative (`last 24 hours`) or absolute. Relative is the common case;
   absolute is what makes a view shareable between two people. Both are cheap.
 - Whether the burst trigger stays motion-shaped. It defaults to the accelerometer and
