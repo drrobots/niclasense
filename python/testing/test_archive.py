@@ -46,6 +46,7 @@ def code(name):
 class Layout(unittest.TestCase):
     def test_every_script_is_present(self):
         for name in ("pull-logs.ps1", "pull-task.ps1", "share-logs.ps1",
+                     "push-logs.ps1", "push-task.ps1",
                      "sources.example.txt", "README.md"):
             self.assertTrue(
                 os.path.isfile(os.path.join(ARCHIVE_DIR, name)), "missing archive/%s" % name
@@ -164,6 +165,93 @@ class ShareIsReadOnly(unittest.TestCase):
             self.assertNotIn("netsh advfirewall firewall add rule", text)
 
 
+class Push(unittest.TestCase):
+    """Each capture sends its own logs, and knows about no other machine.
+
+    What this buys over being pulled from: no collector to keep running, no list of sensors
+    anywhere, and no read-only share on a capture for something else to reach into. What it
+    costs is that every capture can write to the archive, where a collector would have been
+    the only one.
+    """
+
+    def setUp(self):
+        self.push = code("push-logs.ps1")
+        self.task = read("push-task.ps1")
+
+    def test_it_never_deletes_either(self):
+        """retention.py prunes this machine on its own schedule and the archive outlives it.
+        A mirror would faithfully reproduce those deletions."""
+        self.assertNotIn("/MIR", self.push)
+        self.assertNotIn("/PURGE", self.push)
+        for forbidden in ("Remove-Item", "Clear-Content"):
+            self.assertNotIn(forbidden, self.push)
+
+    def test_retries_are_bounded(self):
+        self.assertRegex(self.push, r'"/R:\d+"')
+        self.assertRegex(self.push, r'"/W:\d+"')
+
+    def test_exit_codes_are_read_as_a_bitmask(self):
+        self.assertRegex(self.push, r"-ge\s+8")
+
+    def test_only_captures_are_sent(self):
+        """The log directory is this machine's; the share is everyone's."""
+        self.assertIn('"*.csv"', self.push)
+
+    def test_the_machine_names_itself_portably(self):
+        r"""$env:COMPUTERNAME is Windows-only, and reaching .ToLower() through a null is how
+        this failed the first time it ran anywhere else."""
+        self.assertIn("[Environment]::MachineName", self.push)
+        self.assertNotIn("$env:COMPUTERNAME", self.push)
+
+    def test_the_share_root_is_not_created(self):
+        """A missing share root means the share is not mounted. Creating it would make a
+        local directory that quietly collects logs nobody can see."""
+        self.assertIn("archive unreachable", self.push)
+
+    def test_the_task_runs_as_system_without_a_password(self):
+        self.assertIn("SYSTEM", self.task)
+        self.assertIn("-AtStartup", self.task)
+        for forbidden in ("-Password", "ConvertTo-SecureString", "PSCredential"):
+            self.assertNotIn(forbidden, self.task)
+
+    def test_runs_do_not_stack(self):
+        self.assertIn("IgnoreNew", self.task)
+        self.assertIn("ExecutionTimeLimit", self.task)
+
+
+class InstalledPush(unittest.TestCase):
+    """The installer half. Off unless a share is named."""
+
+    def setUp(self):
+        with open(os.path.join(support.REPO_DIR, "packaging", "nicla.iss"),
+                  encoding="utf-8") as handle:
+            self.iss = handle.read()
+        with open(os.path.join(support.REPO_DIR, "packaging", "build.ps1"),
+                  encoding="utf-8") as handle:
+            self.build = handle.read()
+
+    def test_the_scripts_are_shipped(self):
+        """Staged from archive\\ rather than packaging\\service\\, since the same two files are
+        what you run by hand on a machine installed before there was a share."""
+        self.assertIn("push-logs.ps1", self.build)
+        self.assertIn("push-task.ps1", self.build)
+
+    def test_an_install_that_names_no_share_pushes_nothing(self):
+        rule = [line for line in self.iss.splitlines()
+                if "PushTaskArgs" in line and line.startswith("Filename:")]
+        self.assertEqual(len(rule), 1)
+        self.assertIn("Check: PushesToArchive", rule[0])
+
+    def test_the_share_comes_from_the_command_line(self):
+        self.assertIn("{param:Archive|}", self.iss)
+        self.assertIn("{param:SensorName|}", self.iss)
+
+    def test_the_task_is_removed_again(self):
+        uninstall = self.iss.split("[UninstallRun]", 1)[1]
+        self.assertIn("push-task.ps1", uninstall)
+        self.assertIn("-Uninstall", uninstall)
+
+
 class SourceList(unittest.TestCase):
     """The example has to parse under the rules pull-logs.ps1 enforces, since it is what
     everyone copies."""
@@ -235,7 +323,8 @@ class Behaviour(unittest.TestCase):
 
     def test_the_scripts_parse(self):
         """A syntax error would otherwise be found by a fleet."""
-        names = ("pull-logs.ps1", "pull-task.ps1", "share-logs.ps1")
+        names = ("pull-logs.ps1", "pull-task.ps1", "share-logs.ps1",
+                 "push-logs.ps1", "push-task.ps1")
         command = (
             "$bad=0; foreach ($f in @(%s)) { $e=$null; $t=$null; "
             "[System.Management.Automation.Language.Parser]::ParseFile("
@@ -268,6 +357,35 @@ class Behaviour(unittest.TestCase):
         self.assertIn("unreachable  bench", done.stdout)
         with open(os.path.join(archive, "pull-logs.log"), encoding="utf-8") as handle:
             self.assertIn("unreachable  bench", handle.read())
+
+    def test_push_reports_an_unreachable_share_and_creates_nothing(self):
+        """A capture that is off the network is a normal state, not an alarm -- the next run
+        sends what this one could not, because nothing here deletes."""
+        logs = os.path.join(self.root, "logs")
+        os.makedirs(logs)
+        with open(os.path.join(logs, "nicla_20260819_090000.csv"), "w") as handle:
+            handle.write("host_iso\n")
+        missing = os.path.join(self.root, "not-mounted")
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-File",
+             os.path.join(support.REPO_DIR, "archive", "push-logs.ps1"),
+             "-ArchiveRoot", missing, "-Name", "bench", "-LogDir", logs,
+             "-LogPath", os.path.join(self.root, "push.log")],
+            capture_output=True, text=True, timeout=120,
+        )
+        self.assertIn("archive unreachable", done.stdout + done.stderr)
+        self.assertFalse(os.path.exists(missing), "it created the share root")
+
+    def test_push_says_so_when_there_is_nothing_to_send(self):
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-File",
+             os.path.join(support.REPO_DIR, "archive", "push-logs.ps1"),
+             "-ArchiveRoot", self.root, "-LogDir", os.path.join(self.root, "absent"),
+             "-LogPath", os.path.join(self.root, "push.log")],
+            capture_output=True, text=True, timeout=120,
+        )
+        self.assertEqual(done.returncode, 0, "an unconfigured machine is not a failure")
+        self.assertIn("nothing to push", done.stdout + done.stderr)
 
     def test_a_missing_source_list_says_so(self):
         archive = os.path.join(self.root, "archive")

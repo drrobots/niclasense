@@ -192,6 +192,12 @@ New-Item -ItemType Directory -Force -Path $stageService | Out-Null
 Copy-Item (Join-Path $PackagingDir "service\supervise.py") $stageService
 Copy-Item (Join-Path $PackagingDir "service\nicla-capture.xml") $stageService
 Copy-Item (Join-Path $PackagingDir "service\dashboard-task.ps1") $stageService
+
+# The archive push, from archive\ rather than packaging\service\ because it is not only an
+# installed thing -- the same two scripts are what you run by hand on a machine that was set
+# up before there was a share to push to.
+Copy-Item (Join-Path $RepoDir "archive\push-logs.ps1") $stageService
+Copy-Item (Join-Path $RepoDir "archive\push-task.ps1") $stageService
 # WinSW takes its configuration from the .xml sharing its base name, so the name of the
 # executable is load-bearing rather than cosmetic.
 Copy-Item (Join-Path $DownloadDir $WinswExe) (Join-Path $stageService "nicla-capture.exe")

@@ -80,4 +80,4 @@ if ($OpenFirewall) {
 
 Write-Output ""
 Write-Output "add this line to the viewer's archive\sources.txt:"
-Write-Output ("    {0}    \\{1}\{2}" -f $env:COMPUTERNAME.ToLower(), $env:COMPUTERNAME, $ShareName)
+Write-Output ("    {0}    \\{1}\{2}" -f [Environment]::MachineName.ToLower(), [Environment]::MachineName, $ShareName)

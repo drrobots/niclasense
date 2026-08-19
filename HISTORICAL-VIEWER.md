@@ -131,49 +131,36 @@ whole on/off switch and the reason it is not a silent background task.
 
 ## Getting the files there
 
-**Captures write locally; a collector copies to the share.** Three roles: a capture records
-to its own disk and offers it read-only, one always-on collector copies from all of them onto
-the share, and readers point `viewer.cmd` at that share.
+**Each capture pushes its own logs to the share.** Into a folder named for itself, on a
+schedule, knowing about no other machine. Readers point `viewer.cmd` at that share. There is
+nothing in between.
 
-Writing locally rather than straight to the share is the point of the arrangement. A capture
-writing across a network stops recording when the network hiccups; this way it is the copy
-that fails, and nothing is lost because the next run collects what the last one missed.
+Captures write locally and copy afterwards rather than writing across the network directly,
+which is the point of having a copy step at all: a capture writing to a share stops recording
+when the network hiccups, and this way only the copy fails. Nothing is lost, because the next
+run sends what the last one could not.
 
-Each sensor lands in its own subdirectory, which is a requirement and not a convention: a
-capture is named only for the second it started, so two boards writing into one folder will
-eventually pick the same filename. Those subdirectory names are also the board list, so the
-layout does both jobs at once.
+Each sensor lands in its own subdirectory, which is a requirement rather than a convention: a
+capture is named only for the second it started, so two boards writing into one folder would
+eventually choose the same filename. Those subdirectory names are also the board list, so the
+layout does both jobs and there is no register of sensors anywhere.
 
-A scheduled `robocopy` on the collector pulls from a read-only share on each capture, against
-the hard-coded list in `sources.txt`. That list lives on the collector and nowhere else —
-readers learn which boards exist from the directories on the share.
+Push rather than pull, and the reasoning changed once when the topology did. Pulling was
+right while the destination was a directory on a machine that already existed. Once readers
+became desktops, the collector existed *only* to shuttle files -- an extra always-on machine
+and a single point of failure for all syncing. Pushing removes it, removes the read-only
+share on every capture, and removes `sources.txt`. It also fits the installer, which already
+registers a service and a logon task on every capture, so a fleet is one identical command
+rather than a machine somebody has to set up by hand.
 
-Pull rather than push: one job to maintain instead of one per capture, and the capture
-machines stay read-only with no write access to a shared archive and no scheduled task of
-their own. Pointing `--csv` at a UNC path directly would look tidier and is the trap this
-arrangement exists to avoid — a network hiccup would break recording, and `retention.py`'s
-rule about never deleting the file being written gets harder to reason about across a
-network.
+What it costs is that every capture can write to the archive, where a collector would have
+been the only account that could. Scope it per subdirectory with NTFS permissions if that
+matters. The pull scripts are kept in `archive/` for the same reason -- the trade is real and
+the choice is reversible -- but nothing uses them.
 
-The collector is the only account that writes to the share. It runs as SYSTEM, so what needs
-granting is its machine account: read on each capture's share, write on the archive.
-
-The tolerated lag is minutes, which is what makes a sync step possible at all. It also
-happens to cost nothing: `main.py` sets `flush_every = max(1, int(log_rate))`, so at 1/60 Hz
-every row is flushed as it is written.
-
-**Archive, not mirror** — decided. A plain copy rather than `robocopy /MIR`, so the central
-directory accumulates and becomes the real history, outliving the 365-day and 4 GB horizon
-that `retention.py` enforces on each capture machine. The point of the exercise is looking at
-what happened, and mirroring would mean the archive quietly forgets on the captures' schedule
-rather than on ours.
-
-Two things follow from that choice. Central disk is sized for bursts, not for rest: eight
-boards resting is roughly 800 MB a year, but `nicla.conf` puts a solid day of bursting at
-~3.3 GB and caps each machine at 4 GB, so plan against about 4 GB per board and give the
-archive its own headroom. And because nothing prunes it, the archive needs its own retention
-answer eventually — deliberately not `retention.py`, which is built to protect a capture's
-local disk and knows nothing about a directory being written to by a copy job.
+The tolerated lag is minutes, which is what makes a copy step possible at all. It also costs
+nothing: `main.py` sets `flush_every = max(1, int(log_rate))`, so at 1/60 Hz every row is
+flushed as it is written.
 
 ## Security
 

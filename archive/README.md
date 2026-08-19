@@ -1,56 +1,54 @@
 # Pulling the logs into one place
 
-Windows-only, and separate from `packaging/`: that installs a capture machine, this sets up
-the one machine that collects from them. Three scripts, no Python, nothing new on the
-capture side beyond a read-only share.
+Windows-only. `packaging/` installs a capture machine; this is how a capture's logs reach the
+share everyone reads from.
 
-**Three roles.** A *capture* records to its own disk and offers it read-only. The *collector*
-copies from all of them onto the share, on a schedule. *Readers* point `viewer.cmd` at that
-share and never see a capture machine at all. Only the collector needs to know that more
-than one sensor exists.
+**Two roles, not three.** A *capture* records to its own disk and pushes its own logs to its
+own folder on the share. *Readers* point `viewer.cmd` at that share. There is no machine in
+between, no list of sensors anywhere, and no capture is a file server for any other machine.
+Adding a sensor is installing a sensor.
 
-Captures write locally rather than straight to the share on purpose: a capture writing across
-a network stops recording when the network hiccups, and this way the copy is what fails
-instead. Nothing is lost, because the next run collects what the last one missed.
-
-The design and the reasoning behind it are in `HISTORICAL-VIEWER.md`. The short version is
-that a viewer reading files needs no inbound port on any capture machine, gets its cross-board
-time alignment from `host_iso` for free, and lets AD do the authentication.
-
-## Which script runs where
+Captures write locally and copy afterwards rather than writing across the network directly.
+That is the point of the arrangement: a capture writing to a share stops recording when the
+network hiccups, and this way it is only the copy that fails. Nothing is lost, because the
+next run sends what the last one could not.
 
 | Script | Machine | When |
 |---|---|---|
-| `share-logs.ps1` | every capture | once, elevated |
-| `pull-task.ps1` | the collector | once, elevated |
-| `pull-logs.ps1` | the collector | by the task, every few minutes |
+| `push-task.ps1` | every capture | once, elevated — or by the installer |
+| `push-logs.ps1` | every capture | by the task, every few minutes |
+
+`pull-logs.ps1`, `pull-task.ps1` and `share-logs.ps1` are the other arrangement — a read-only
+share on each capture and one collector machine copying from all of them. Nothing uses them
+now. They are kept because the choice is reversible and the trade is real: pulling means one
+account writes to the archive instead of every capture. See *The other way round* below.
 
 ## Setting it up
 
-**On each capture machine**, publish the logs read-only. `COLLECTOR$` is the collector's
-machine account — the trailing `$` is not a typo, it is how a machine account is named, and
-it is what lets the pull run without a password stored anywhere:
+**By installer, which is the point of pushing.** One command, identical on every machine:
 
-```powershell
-.\share-logs.ps1 -ReadAccount "CONTOSO\COLLECTOR$"
+```
+setup.exe /VERYSILENT /ARCHIVE=\\fileserver\NiclaLogs
 ```
 
-It prints the line to add to `sources.txt`. Once there is more than one thing reading,
-grant a group instead and put the machine accounts in that.
+The folder on the share is the machine's own name. Pass `/SENSORNAME=bench` to call it
+something else. An install naming no archive pushes nothing and behaves exactly as installs
+did before there was a share.
 
-**On the archive share**, grant that same collector account **write** access. It is the one
-account that writes there; everyone else needs only read, and read is what decides who may
-look at the logs.
-
-**On the collector**, list the captures and register the task:
+**By hand**, on a machine installed before there was an archive:
 
 ```powershell
-Copy-Item sources.example.txt sources.txt   # then edit it
-.\pull-task.ps1 -ArchiveRoot \\fileserver\NiclaLogs
+.\push-task.ps1 -ArchiveRoot \\fileserver\NiclaLogs
 ```
 
-Run `pull-logs.ps1` by hand first to see it work — it reports each source on its own line and
-writes the same to `pull-logs.log` in the archive root.
+**On the share**, grant every capture's machine account write access — a group holding them
+is the manageable form. The trailing `$` in `CONTOSO\BENCH01$` is not a typo; it is how a
+machine account is named, and using it is what lets the push run with no password stored
+anywhere. Readers need only read.
+
+If it matters that a capture can only write to its own folder, scope that with NTFS
+permissions per subdirectory. Share-level write is the simpler grant and lets any capture
+touch another's folder.
 
 ## What lands where
 
@@ -85,12 +83,15 @@ the file system would otherwise permit.
 
 ## When it does not work
 
-**A machine is skipped as `unreachable`.** Expected, and not a failure — captures reboot.
-The next run collects what it missed, because nothing deletes and robocopy skips what it
-already has. If it is *always* unreachable, check File and Printer Sharing is allowed
-through the capture's firewall for the domain or private profile; `share-logs.ps1
--OpenFirewall` will enable it, and it is off by default because on a managed fleet that is
-usually policy's job.
+**`archive unreachable`.** The share is not mounted on that capture. Expected occasionally
+and not a failure — the next run sends what this one could not. If it never clears, the
+machine cannot see the share at all.
+
+**`cannot create ... this machine's account probably cannot write to the share`.** The grant
+is missing. The task runs as SYSTEM, so the account to grant is `DOMAIN\THATMACHINE$`, not a
+user.
+
+**`nothing to push`.** The capture service has not written anything yet, or is not installed.
 
 **The run fails before it starts, naming the archive.** The share is not mounted on the
 collector, or the collector's machine account cannot write to it. The task runs as SYSTEM, so
@@ -103,6 +104,19 @@ runs as SYSTEM, so it arrives as `DOMAIN\VIEWERBOX$`.
 **Nothing appears to happen.** robocopy's exit code is a bitmask where success is not zero:
 0 is "nothing needed copying", 1 is "files copied", and only 8 and above are failures.
 `pull-logs.ps1` accounts for that, but anything you write around it needs to as well.
+
+## The other way round
+
+`share-logs.ps1`, `pull-task.ps1` and `pull-logs.ps1` implement pulling instead: each capture
+offers a read-only share, one always-on collector copies from all of them onto the archive,
+and `sources.txt` on that collector lists the machines.
+
+It is kept for one reason. Pushing means every capture can write to the archive; pulling
+means exactly one account can, and every capture is read-only to the rest of the network. If
+that trade ever matters more than the collector machine costs, the scripts are here and
+`archive/README.md` history has the setup.
+
+Do not run both. They would copy the same files by two routes, which works and is confusing.
 
 ## Testing
 

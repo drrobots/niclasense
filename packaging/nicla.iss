@@ -70,11 +70,15 @@ Name: "{group}\Edit capture settings"; Filename: "notepad.exe"; Parameters: """{
 Filename: "{app}\service\nicla-capture.exe"; Parameters: "install"; StatusMsg: "Registering the capture service..."; Flags: runhidden waituntilterminated
 Filename: "{app}\service\nicla-capture.exe"; Parameters: "start"; StatusMsg: "Starting the capture service..."; Flags: runhidden waituntilterminated
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\service\dashboard-task.ps1"" -AppDir ""{app}"""; StatusMsg: "Setting up the dashboard..."; Flags: runhidden waituntilterminated
+; Only when an archive share was named. An install that says nothing keeps its logs to
+; itself, which is what every install did before there was an archive at all.
+Filename: "powershell.exe"; Parameters: "{code:PushTaskArgs}"; StatusMsg: "Setting up the archive push..."; Flags: runhidden waituntilterminated; Check: PushesToArchive
 Filename: "http://127.0.0.1:8988/"; Description: "Open the dashboard"; Flags: postinstall shellexec nowait skipifsilent
 
 [UninstallRun]
 ; Mirror image, and every one of them tolerant of already being gone: an uninstall that
 ; fails because the service was stopped by hand is a bad uninstall.
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\service\push-task.ps1"" -Uninstall"; RunOnceId: "PushTask"; Flags: runhidden waituntilterminated
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\service\dashboard-task.ps1"" -AppDir ""{app}"" -Uninstall"; RunOnceId: "DashboardTask"; Flags: runhidden waituntilterminated
 Filename: "{app}\service\nicla-capture.exe"; Parameters: "stop"; RunOnceId: "StopService"; Flags: runhidden waituntilterminated
 Filename: "{app}\service\nicla-capture.exe"; Parameters: "uninstall"; RunOnceId: "RemoveService"; Flags: runhidden waituntilterminated
@@ -86,6 +90,35 @@ Type: filesandordirs; Name: "{app}\app\__pycache__"
 Type: filesandordirs; Name: "{app}\service\__pycache__"
 
 [Code]
+{ Where this machine pushes its logs, from the setup command line:
+
+    setup.exe /VERYSILENT /ARCHIVE=\\fileserver\NiclaLogs
+    setup.exe /VERYSILENT /ARCHIVE=\\fileserver\NiclaLogs /SENSORNAME=bench
+
+  Naming nothing leaves the machine keeping its logs to itself, exactly as before there was
+  an archive at all. The folder on the share is this machine's own name unless /SENSORNAME
+  says otherwise, which is what lets one identical command install a whole fleet. }
+function ArchiveRoot(): String;
+begin
+  Result := ExpandConstant('{param:Archive|}');
+end;
+
+function PushesToArchive(): Boolean;
+begin
+  Result := ArchiveRoot() <> '';
+end;
+
+function PushTaskArgs(Param: String): String;
+var
+  SensorName: String;
+begin
+  Result := '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}') +
+            '\service\push-task.ps1" -ArchiveRoot "' + ArchiveRoot() + '"';
+  SensorName := ExpandConstant('{param:SensorName|}');
+  if SensorName <> '' then
+    Result := Result + ' -Name "' + SensorName + '"';
+end;
+
 function InitializeSetup(): Boolean;
 var
   ResultCode: Integer;
