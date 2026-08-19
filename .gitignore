@@ -25,3 +25,6 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+# Site-specific: the list of capture machines to pull from.
+archive/sources.txt

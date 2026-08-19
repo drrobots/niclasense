@@ -1,0 +1,17 @@
+# Capture machines to pull logs from. Copy to sources.txt and edit.
+#
+#   <name>    <\\host\share>
+#
+# The name becomes a directory under the archive root, and that directory *is* how anything
+# reading the archive later knows which boards exist -- there is no second list to keep in
+# step with this one. So the name is what you want to see on a plot: short, stable, and not
+# the hostname unless the hostname is already the useful label.
+#
+# Names are restricted to letters, digits, dot, dash and underscore, because they are used
+# as directory names unmodified.
+#
+# share-logs.ps1 prints the correct line for each machine when you run it there.
+
+bench     \\NICLA-BENCH-01\NiclaLogs
+rig-a     \\NICLA-RIG-A\NiclaLogs
+rig-b     \\NICLA-RIG-B\NiclaLogs
