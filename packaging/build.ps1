@@ -153,6 +153,12 @@ Copy-Item (Join-Path $RepoDir "python\web") $stageApp -Recurse
 Copy-Item (Join-Path $RepoDir "python\example.conf") $stageApp
 Copy-Item (Join-Path $RepoDir "python\requirements.txt") $stageApp
 
+# The archive viewer's launcher and its example settings. Shipped alongside rather than in
+# their own installer: the .py files they need are already here, and a machine that captures
+# is also a machine somebody might want to read the archive from.
+Copy-Item (Join-Path $RepoDir "python\viewer.cmd") $stageApp
+Copy-Item (Join-Path $RepoDir "python\viewer.conf.example") $stageApp
+
 # The wheel is a zip. Unpacking it beats installing it: no pip inside the embeddable
 # runtime, no bootstrap, nothing written outside this directory, and the result is
 # inspectable. pyserial is pure Python, so there is nothing to compile or select.

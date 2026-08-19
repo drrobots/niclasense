@@ -103,7 +103,46 @@ range, widen to `min_span`, pad 12%. `ARCHITECTURE-NOTES.md` records that having
 languages was a real problem and that `app.js` is the only implementation left; a third would
 be the same mistake with a new coat.
 
+## Where it runs
+
+A copy per person, on their own machine, against the share. Not one instance served to the
+network.
+
+That decision is what removes the authentication question rather than answering it. A
+served viewer would need something in front of it — a reverse proxy doing Windows
+Integrated Auth was the only sound option, since there is no authentication in `viewer.py`
+and putting some there would cost the project its one-dependency rule for what IIS does as
+a checkbox. Running a copy each means nothing is ever served beyond loopback, and who may
+read the logs is decided by the share's permissions, which AD already enforces and somebody
+already has to get right for the sensors to write there at all.
+
+The costs, stated rather than discovered: the viewer has to be installed on each machine
+that wants it, reading many small files over SMB is slower than off local disk, and two
+people scanning the same archive each pay to scan it once because the episode cache is per
+process. At a row a minute none of those are felt; if `log_rate` is ever raised, the first
+two will be.
+
+`viewer.cmd` is the double-click. It reads `viewer.conf` beside it, so nothing site-specific
+is ever edited into a script, and it uses `pushd` rather than `cd` because cmd cannot hold a
+UNC path as a working directory — it warns and silently leaves you in `C:\Windows`, where
+neither the script nor its config is. That is what lets the launcher live on the share next
+to the logs. The console window it opens is the viewer: closing it stops it, which is the
+whole on/off switch and the reason it is not a silent background task.
+
 ## Getting the files there
+
+**The sensors write to the share directly.** Each into its own subdirectory, which is not a
+convention but a requirement: a capture is named only for the second it started, so two
+boards writing into one folder will eventually pick the same filename. The subdirectory
+names are also the board list, so the layout does both jobs at once.
+
+That trades robustness for simplicity, and the trade is worth stating. A capture writing
+across a network stops recording when the network hiccups, where a local write and a copy
+afterwards would have ridden it out. `archive/` holds the scripts for that other
+arrangement — a read-only share per capture and a scheduled pull — and they are kept
+because the choice is reversible, not because anything now uses them.
+
+The rest of this section describes that unused arrangement.
 
 Captures keep writing locally. A scheduled `robocopy` on the viewer machine pulls from
 read-only shares on each capture, against the same hard-coded list of machines the viewer
@@ -136,10 +175,10 @@ local disk and knows nothing about a directory being written to by a copy job.
 
 Better than the live route on every axis, mostly by not doing things.
 
-Nothing inbound is opened on any capture machine. The viewer serves ordinary
-request/response HTTP, so it proxies behind IIS with Windows Integrated Auth cleanly and
-authorisation becomes an AD group rather than code. Short-lived requests also retire the
-unbounded-connection question that a permanent event stream raises.
+Nothing inbound is opened on any capture machine, and nothing is served to the network at
+all: every viewer binds loopback on the machine of the person using it. Authorisation is the
+share's ACLs, which AD enforces and which have to be right anyway for the sensors to write
+there. No proxy, no certificate, no auth code.
 
 Two items carry over from the dashboard and are worth fixing wherever this lands: the status
 payload discloses the capture's absolute CSV path, and no route sets

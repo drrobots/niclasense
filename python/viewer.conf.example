@@ -1,0 +1,21 @@
+# Settings for the archive viewer. Copy to viewer.conf beside viewer.cmd and edit.
+#
+# Every key here is a viewer.py flag, so `viewer.py --help` documents the full set and
+# anything given on the command line beats what is written here.
+
+# The folder holding one subdirectory per sensor. A UNC path is fine, and is the point:
+#
+#     \\fileserver\NiclaLogs\
+#         bench\   nicla_20260819_085534.csv ...
+#         rig-a\   ...
+#
+# One directory per sensor is not decoration. The directory names *are* the board list --
+# nothing else records which sensors exist -- and each sensor writing into its own folder is
+# what stops two of them colliding, since a capture is named only for the second it started
+# and two boards starting together would otherwise pick the same filename.
+archive = \\fileserver\NiclaLogs
+
+# Port the viewer serves on, for the browser it opens on this machine. It binds 127.0.0.1
+# and nothing else, so this is not visible to the network and does not need a firewall rule.
+# Change it only if something else here already uses 8990.
+http_port = 8990

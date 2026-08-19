@@ -11,6 +11,7 @@ from http.client import HTTPConnection
 
 import support
 
+import config
 import viewer
 
 T0 = datetime.datetime(2026, 8, 19, 9, 0, 0)
@@ -245,6 +246,83 @@ class EmptyArchive(unittest.TestCase):
         status, body = self.get("/events")
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body.decode("utf-8"))["count"], 0)
+
+
+class Launching(unittest.TestCase):
+    """What the double-click has to work through.
+
+    The launcher runs one fixed command, so everything site-specific lives in viewer.conf
+    and nobody has to edit a script to point it at a different share.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="nicla-conf-")
+        self.addCleanup(shutil.rmtree, self.dir, True)
+
+    def conf(self, text):
+        path = os.path.join(self.dir, "viewer.conf")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return path
+
+    def test_the_archive_can_come_from_the_file(self):
+        args = viewer.parse_args(["--config", self.conf("archive = /srv/logs\n")])
+        self.assertEqual(args.archive, "/srv/logs")
+
+    def test_a_unc_path_survives_the_file(self):
+        r"""Backslashes are the whole point of the path and must not be eaten."""
+        unc = r"\\fileserver\NiclaLogs"
+        path = self.conf("archive = " + unc + "\n")
+        self.assertEqual(viewer.parse_args(["--config", path]).archive, unc)
+
+    def test_the_command_line_still_wins(self):
+        path = self.conf("archive = /srv/logs\nhttp_port = 8990\n")
+        args = viewer.parse_args(["--config", path, "--http-port", "9100"])
+        self.assertEqual(args.http_port, 9100)
+
+    def test_no_archive_anywhere_is_a_usage_error_not_a_traceback(self):
+        with self.assertRaises(SystemExit) as caught:
+            viewer.parse_args([])
+        self.assertEqual(caught.exception.code, 2)
+
+    def test_open_is_available_for_the_launcher(self):
+        args = viewer.parse_args(["--archive", self.dir, "--open"])
+        self.assertTrue(args.open)
+
+
+class Launcher(unittest.TestCase):
+    """The .cmd, read as text. It is Windows and cannot run here."""
+
+    def setUp(self):
+        with open(os.path.join(support.PYTHON_DIR, "viewer.cmd"), encoding="utf-8") as handle:
+            self.cmd = handle.read()
+
+    def test_it_uses_pushd_for_its_own_directory(self):
+        r"""cmd cannot hold a UNC path as a working directory -- it warns and leaves you in
+        C:\Windows, where neither viewer.py nor viewer.conf is. pushd maps a drive letter,
+        which is what lets the launcher live on the share beside the logs."""
+        self.assertIn('pushd "%~dp0"', self.cmd)
+        self.assertNotIn('cd /d "%~dp0"', self.cmd)
+        self.assertIn("popd", self.cmd)
+
+    def test_every_failure_pauses(self):
+        """A window that vanishes takes its error message with it, and the user is left with
+        a double-click that does nothing at all."""
+        for label in (":noshare", ":nopython", ":failed"):
+            tail = self.cmd.split(label, 1)[1]
+            self.assertIn("pause", tail.split("exit /b", 1)[0], label)
+
+    def test_it_reads_the_config_rather_than_hardcoding_a_path(self):
+        self.assertIn("--config viewer.conf", self.cmd)
+        self.assertIn("--open", self.cmd)
+
+    def test_the_example_config_parses(self):
+        """It is what everyone copies, so a key that is not a flag would be found by the
+        first person to try it rather than here."""
+        example = os.path.join(support.PYTHON_DIR, "viewer.conf.example")
+        values = config.load(example, viewer.build_parser())
+        self.assertIn("archive", values)
+        self.assertEqual(values["http_port"], 8990)
 
 
 class BindsLoopbackOnly(unittest.TestCase):

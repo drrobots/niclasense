@@ -7,14 +7,14 @@ capture and draws what is arriving; this one opens files that were copied here b
 socket to anything, so there is no stream to keep alive, no client registry, and no
 per-client backlog -- most of what makes `webhub.py` complicated has no counterpart here.
 
-Bound to 127.0.0.1 and left that way. There is no authentication in this file and there is
-not going to be: putting it in front of people is a reverse proxy's job, where Windows
-Integrated Auth against AD is configuration rather than code. See HISTORICAL-VIEWER.md.
+Bound to 127.0.0.1 and left that way, and there is no authentication in this file. That is
+not an omission: a copy of this runs on each person's own machine against the share the
+sensors write to, so nothing is ever served to the network and who may read the logs is a
+question the share's permissions already answer. There is no web tier to secure because
+there is no web tier.
 
-So far it serves the burst index, which is the first useful question about an archive --
-not "draw me a day" but "what happened, and when". The range and the page come next.
-
-    python viewer.py --archive D:\\NiclaArchive
+    viewer.cmd                                  double-click; reads viewer.conf
+    python viewer.py --archive \\\\fileserver\\NiclaLogs --open
     curl 'http://127.0.0.1:8990/events?from=2026-08-19T09:00:00'
 """
 
@@ -24,9 +24,13 @@ import json
 import os
 import socketserver
 import sys
+import threading
+import time
+import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+import config
 import tiles
 from events import EventIndex
 from logstore import LogStore
@@ -253,27 +257,79 @@ def serve(root, port=DEFAULT_HTTP_PORT, host="127.0.0.1"):
     return _Server((host, port), Bound)
 
 
-def main(argv=None):
+def build_parser():
     parser = argparse.ArgumentParser(
-        description="Serve the burst index for an archive of Nicla captures.",
+        description="Serve a browser view of an archive of Nicla captures.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--archive", required=True, metavar="DIR",
-                        help="Archive root: one directory per board.")
+    parser.add_argument(
+        "--config", default=None, metavar="FILE",
+        help="INI file setting any of the options below. The command line wins.",
+    )
+    parser.add_argument("--archive", default=None, metavar="DIR",
+                        help="Archive root: one directory per board. A UNC path is fine.")
     parser.add_argument("--http-port", type=int, default=DEFAULT_HTTP_PORT,
                         help="Port to serve on.")
+    parser.add_argument("--open", action="store_true",
+                        help="Open a browser at the viewer once it is up.")
+    return parser
+
+
+def parse_args(argv=None):
+    """Command line over config file over defaults, exactly as main.py does it.
+
+    Which is what makes the double-click launcher possible: viewer.conf carries the archive
+    path, and the shortcut runs one fixed command that never has to be edited.
+    """
+    parser = build_parser()
+
+    finder = argparse.ArgumentParser(add_help=False)
+    finder.add_argument("--config", default=None)
+    preview, _rest = finder.parse_known_args(argv)
+
+    if preview.config is not None:
+        try:
+            parser.set_defaults(**config.load(preview.config, parser))
+        except config.ConfigError as exc:
+            parser.error(str(exc))
+
     args = parser.parse_args(argv)
+    if not args.archive:
+        parser.error("no archive given: pass --archive, or set archive in a --config file")
+    return args
+
+
+def main(argv=None):
+    args = parse_args(argv)
+
+    # Said plainly at start-up, because the usual reason is a share that has not mounted and
+    # the alternative is a page that just says there are no boards yet -- which is what an
+    # empty archive says too, and they are very different problems.
+    reachable = os.path.isdir(args.archive)
+    if not reachable:
+        print("warning: %s is not readable -- is the share mounted?" % args.archive,
+              file=sys.stderr)
 
     try:
         server = serve(args.archive, port=args.http_port)
     except OSError as exc:
-        print("error: cannot serve on 127.0.0.1:%d (%s)" % (args.http_port, exc),
+        print("error: cannot serve on 127.0.0.1:%d (%s). Another viewer is probably "
+              "already running -- use the window it opened." % (args.http_port, exc),
               file=sys.stderr)
         return 1
 
+    url = "http://127.0.0.1:%d/" % args.http_port
     store = LogStore(args.archive)
     print("archive %s -- %d board(s)" % (args.archive, len(store.boards())))
-    print("serving http://127.0.0.1:%d/ -- Ctrl-C to stop" % args.http_port)
+    print("serving %s" % url)
+    print("")
+    print("Close this window to stop the viewer.")
+
+    if args.open:
+        # After the socket is bound but from another thread, so the browser opening cannot
+        # delay the server that is about to answer it.
+        threading.Thread(target=_open_later, args=(url,), daemon=True).start()
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -281,6 +337,16 @@ def main(argv=None):
     finally:
         server.server_close()
     return 0
+
+
+def _open_later(url, delay=0.4):
+    time.sleep(delay)
+    try:
+        webbrowser.open(url)
+    except Exception:
+        # A machine with no browser association is not a reason to take the server down;
+        # the URL is on screen either way.
+        pass
 
 
 if __name__ == "__main__":
