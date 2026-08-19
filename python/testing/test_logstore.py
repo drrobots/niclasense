@@ -117,6 +117,53 @@ class Windows(unittest.TestCase):
         self.assertTrue(self.make(T0, T0).overlaps())
 
 
+class PlotTime(ArchiveFixture):
+    """Rows carry two clocks, and the one to draw with is not the one in the file.
+
+    The CMSIS-DAP bridge delivers in clumps, so inside a burst five or six consecutive
+    samples share a host_iso millisecond and the stamp then jumps ~25 ms. Drawn on host_iso
+    a 200 Hz waveform came out as 44 stair-steps where there were 250 samples -- measured on
+    a real board capture, which is the only reason it was noticed.
+    """
+
+    def rows_of(self, path):
+        store = LogStore(self.root)
+        capture = store.captures(board="bench")[0]
+        return list(store.rows(capture))
+
+    def test_rows_carry_both_clocks(self):
+        path = self.capture(self.bench, T0, minutes=1)
+        first = self.rows_of(path)[0]
+        self.assertIn("host_iso", first)
+        self.assertIn("t", first)
+        self.assertIsInstance(first["t"], datetime.datetime)
+
+    def test_burst_samples_come_out_evenly_spaced(self):
+        """Whatever the arrival stamps did, the board wrote these 5 ms apart."""
+        path = self.capture(self.bench, T0, minutes=2, moves=((30.0, 0.5),))
+        rows = [row for row in self.rows_of(path) if row["burst"]]
+        self.assertGreater(len(rows), 50)
+        gaps = set()
+        for before, after in zip(rows, rows[1:]):
+            gaps.add(round((after["t"] - before["t"]).total_seconds(), 4))
+        self.assertEqual(gaps, {0.005}, "burst samples are not on the board's grid")
+
+    def test_the_anchor_is_retaken_between_dense_runs(self):
+        """So the board clock only ever positions samples inside one run and cannot drift
+        away from wall clock across a whole file."""
+        path = self.capture(self.bench, T0, minutes=4, moves=((30.0, 0.4), (180.0, 0.4)))
+        rows = self.rows_of(path)
+        for row in rows:
+            drift = abs((row["t"] - row["host_iso"]).total_seconds())
+            self.assertLess(drift, 2.0, "plot time drifted away from the wall clock")
+
+    def test_plot_time_never_runs_backwards(self):
+        """An anchor retaken to an earlier wall clock would scramble the series."""
+        path = self.capture(self.bench, T0, minutes=4, moves=((30.0, 0.4), (180.0, 0.4)))
+        times = [row["t"] for row in self.rows_of(path)]
+        self.assertEqual(times, sorted(times))
+
+
 class Rows(ArchiveFixture):
     def test_rows_arrive_typed_and_tagged(self):
         path = self.capture(self.bench, T0, minutes=1)

@@ -29,6 +29,22 @@ from columns import BURST_COLUMN, CSV_COLUMNS, HOST_TIME_COLUMN
 CAPTURE_NAME = re.compile(r"^nicla_(\d{8}_\d{6})\.csv$")
 NAME_STAMP = "%Y%m%d_%H%M%S"
 
+# The key rows carry their plottable time under. Separate from host_iso so nothing is
+# falsified: what the logger wrote stays exactly where it was written.
+PLOT_TIME = "t"
+
+# How far t_ms may jump before the wall-clock anchor is taken again. Comfortably above the
+# 5 ms between samples in a burst and comfortably below the 60 s between steady rows, so the
+# board clock positions samples inside a dense run and wall clock places the runs.
+ANCHOR_GAP_MS = 1000
+
+
+def _board_ms(row):
+    try:
+        return int(row["t_ms"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
 
 def parse_start(filename):
     """The moment a capture began, from its name, or None if it is not one of ours."""
@@ -165,6 +181,18 @@ class LogStore(object):
         copied mid-append, and any capture ended with Ctrl-C leaves one too. It is dropped
         without comment. A row that is malformed in the *middle* of a file is dropped the
         same way, which loses a sample and keeps the other several thousand.
+
+        Rows carry two times. `host_iso` is what the logger wrote and is what lines boards
+        up against each other. `t` is that anchored clock advanced by the board's own t_ms,
+        and it is the one to plot: the CMSIS-DAP bridge delivers in clumps, so inside a burst
+        five or six consecutive samples share a host_iso millisecond and then the stamp jumps
+        25 ms. Drawn on host_iso a 200 Hz waveform becomes a staircase of about forty steps
+        where there were two hundred and fifty samples -- measured on a real capture, not
+        supposed.
+
+        The anchor is re-established whenever t_ms jumps by more than a second, which is
+        every steady row and never inside a burst. So the board clock only ever positions
+        samples within one dense run, and cannot drift away from wall clock across a file.
         """
         with open(capture.path, "r", newline="") as handle:
             reader = csv.reader(handle)
@@ -176,18 +204,37 @@ class LogStore(object):
                 return
             width = len(header)
             has_burst = header[-1] == BURST_COLUMN
+            anchor_host = None
+            anchor_ms = None
+            last_ms = None
             for fields in reader:
                 if len(fields) != width:
                     continue
                 when = parse_time(fields[0])
                 if when is None:
                     continue
+
+                row = dict(zip(header, fields))
+                # The anchor is advanced for every row, including ones outside the window --
+                # skipping first would break the chain and misplace the rows that follow.
+                board_ms = _board_ms(row)
+                if board_ms is None:
+                    plotted = when
+                else:
+                    if (anchor_host is None or last_ms is None
+                            or abs(board_ms - last_ms) > ANCHOR_GAP_MS):
+                        anchor_host, anchor_ms = when, board_ms
+                    plotted = anchor_host + datetime.timedelta(
+                        milliseconds=board_ms - anchor_ms
+                    )
+                    last_ms = board_ms
+
                 if start is not None and when < start:
                     continue
                 if end is not None and when > end:
                     continue
-                row = dict(zip(header, fields))
                 row[HOST_TIME_COLUMN] = when
+                row[PLOT_TIME] = plotted
                 row[BURST_COLUMN] = int(row[BURST_COLUMN]) if has_burst else 0
                 row["board"] = capture.board
                 yield row

@@ -21,15 +21,31 @@ not "draw me a day" but "what happened, and when". The range and the page come n
 import argparse
 import datetime
 import json
+import os
 import socketserver
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+import tiles
 from events import EventIndex
 from logstore import LogStore
+from series import DEFAULT_WIDTH, as_payload, bucket_rows
+from webhub import WEB_ROOT, build_spec
 
 DEFAULT_HTTP_PORT = 8990
+
+MIME_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+}
+
+# The columns the tiles actually draw. Asking for all 27 would send three arrays each of
+# whatever nobody is looking at; this is the set /spec already told the client about.
+TILE_COLUMNS = tuple(
+    dict.fromkeys(column for tile in tiles.TILES for column, _l, _c in tile["series"])
+)
 
 
 def parse_when(text):
@@ -69,10 +85,18 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if parsed.path == "/events":
                 self._events(query)
-            elif parsed.path in ("/", "/index.html"):
+            elif parsed.path == "/range":
+                self._range(query)
+            elif parsed.path == "/spec":
+                self._spec()
+            elif parsed.path == "/archive":
                 self._summary()
+            elif parsed.path in ("/", "/index.html"):
+                self._file("history.html")
             else:
-                self._text(404, "no such route: %s\n" % parsed.path)
+                # basename() is the whole path-traversal defence, as in webhub: whatever
+                # arrives, only a bare name inside web/ can be reached.
+                self._file(os.path.basename(parsed.path))
         except ValueError as exc:
             # Only the query parsers raise this, and only on input the caller typed.
             self._text(400, "bad request: %s\n" % exc)
@@ -101,6 +125,79 @@ class Handler(BaseHTTPRequestHandler):
             "board": board,
         })
 
+    def _range(self, query):
+        """Rows for a window, reduced to something a plot can draw.
+
+        One board per call. Two boards bucketed separately would land on different grids
+        unless both were given the same window, and the window is exactly what this asks
+        for, so they line up by construction.
+        """
+        start, end, board = self._window(query)
+        boards = self.store_ref.boards()
+        if board is None:
+            if not boards:
+                self._json({"board": None, "t": [], "columns": {}, "burst": [],
+                            "buckets": 0, "rows": 0, "downsampled": False})
+                return
+            board = boards[0]
+        if board not in boards:
+            self._text(404, "no such board: %s\n" % board)
+            return
+
+        names = query.get("columns", [None])[0]
+        columns = tuple(name for name in names.split(",") if name) if names else TILE_COLUMNS
+        try:
+            width = int(query.get("width", [DEFAULT_WIDTH])[0])
+        except (TypeError, ValueError):
+            raise ValueError("width must be a number")
+
+        buckets, seen = bucket_rows(
+            self._rows(board, start, end), columns, start=start, end=end, width=width
+        )
+        payload = as_payload(buckets, columns, seen)
+        payload["board"] = board
+        payload["from"] = start.isoformat() if start else None
+        payload["to"] = end.isoformat() if end else None
+        self._json(payload)
+
+    def _rows(self, board, start, end):
+        """Every row in the window, across however many captures it spans."""
+        for capture in self.store_ref.captures(board=board, start=start, end=end):
+            for row in self.store_ref.rows(capture, start=start, end=end):
+                yield row
+
+    def _spec(self):
+        """The tiles, and what boards there are to draw them for.
+
+        build_spec is webhub's, deliberately: the layout lives in tiles.py and is served
+        rather than restated, and a second copy of that mapping here would be the same
+        mistake the dashboard already avoids.
+        """
+        spec = build_spec(sample_hz=0.0, source="archive %s" % self.store_ref.root)
+        spec["boards"] = self.store_ref.boards()
+        spec["archive"] = self.store_ref.root
+        spec["live"] = False
+        # What the archive actually spans, from names and mtimes -- no file is opened for
+        # this. The page opens on it rather than on a fixed span, because bucketing is
+        # uniform across the *window*: ask for a day of an archive holding two minutes and
+        # those two minutes land in two buckets and draw as a dot.
+        captures = self.store_ref.captures()
+        spec["extent"] = {
+            "from": captures[0].start.isoformat() if captures else None,
+            "to": max(one.end for one in captures).isoformat() if captures else None,
+        }
+        self._json(spec)
+
+    def _file(self, name):
+        full = os.path.join(WEB_ROOT, name)
+        extension = os.path.splitext(name)[1]
+        if extension not in MIME_TYPES or not os.path.isfile(full):
+            self._text(404, "no such route: /%s\n" % name)
+            return
+        with open(full, "rb") as handle:
+            body = handle.read()
+        self._send(200, body, MIME_TYPES[extension])
+
     def _summary(self):
         """What is in the archive, in plain text. The page comes later; until then this is
         how you find out whether the pull is working."""
@@ -120,7 +217,7 @@ class Handler(BaseHTTPRequestHandler):
         if strays:
             lines.append("")
             lines.append("not captures: %s" % ", ".join(strays))
-        lines += ["", "routes: /events?from=&to=&board="]
+        lines += ["", "routes: / /spec /events /range /archive"]
         self._text(200, "\n".join(lines) + "\n")
 
     # -- plumbing --------------------------------------------------------------

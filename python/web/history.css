@@ -1,0 +1,180 @@
+/* The historical viewer's page. Separate from dash.css on purpose: the dashboard is a wall
+   of live tiles and this is a document you arrive at, read, and drill into. */
+
+:root {
+  --ground: #f3f6f7;
+  --panel: #ffffff;
+  --ink: #10191e;
+  --muted: #5b6d75;
+  --rule: #d5e0e4;
+  --accent: #0b6a88;
+  --burst: #b23a86;
+  --stale: #8a5a06;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ground: #0f1619;
+    --panel: #161f24;
+    --ink: #e3ecf0;
+    --muted: #93a6ae;
+    --rule: #26333a;
+    --accent: #50bfe6;
+    --burst: #ff6eff;
+    --stale: #e0a93e;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font: 14px/1.5 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+button, select {
+  font: inherit;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+button:hover { border-color: var(--accent); }
+button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--rule);
+}
+.bar .who { display: flex; gap: 10px; align-items: center; }
+.bar .when { display: flex; gap: 4px; }
+.bar .state { display: flex; gap: 10px; align-items: center; }
+
+.asof {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  font-size: 13px;
+}
+.asof.stale { color: var(--stale); font-weight: 600; }
+
+/* An explicit display beats the hidden attribute, which is how the overview banner ended up
+   permanently on screen while the element reported itself hidden. */
+.detail[hidden] { display: none; }
+
+.detail {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--rule);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* -- the rail ------------------------------------------------------------- */
+/* Bursts drawn as marks on a timeline rather than as trace data. At an hour wide a
+   half-second burst is a third of a pixel, and drawn into the plot it is a vertical smear
+   across whatever it lands on. */
+
+.rail { padding: 10px 16px 4px; }
+.railtrack {
+  position: relative;
+  height: 26px;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.railmark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  min-width: 2px;
+  background: var(--burst);
+  opacity: 0.75;
+  cursor: pointer;
+  border: 0;
+  padding: 0;
+  border-radius: 0;
+}
+.railmark:hover, .railmark:focus-visible { opacity: 1; }
+.railnote { color: var(--muted); font-size: 12px; padding-top: 4px; }
+
+/* -- layout --------------------------------------------------------------- */
+
+main {
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) 1fr;
+  gap: 16px;
+  padding: 8px 16px 32px;
+  align-items: start;
+}
+@media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+
+h2 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin: 8px 0;
+}
+
+.eventlist {
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+.event {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  border-bottom: 1px solid var(--rule);
+  border-radius: 0;
+  padding: 8px 10px;
+  background: none;
+}
+.event:last-child { border-bottom: 0; }
+.event:hover { background: var(--ground); }
+.event .t { font-variant-numeric: tabular-nums; font-weight: 600; }
+.event .meta { color: var(--muted); font-size: 12px; }
+.empty { padding: 12px 10px; color: var(--muted); }
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  gap: 12px;
+}
+.tile {
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 6px 8px 2px;
+  min-width: 0;
+}
+.tile h3 {
+  margin: 0 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.tile .unit { font-weight: 400; }
+.tile .uplot { width: 100%; }
+@media (max-width: 860px) { .tiles { grid-template-columns: 1fr; } .tile { grid-column: auto !important; } }

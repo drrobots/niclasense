@@ -97,9 +97,102 @@ class Events(ServedArchive):
         self.assertEqual(starts, sorted(starts))
 
 
+class Range(ServedArchive):
+    def range(self, query=""):
+        status, body, _r = self.get("/range" + query)
+        self.assertEqual(status, 200, body)
+        return json.loads(body.decode("utf-8"))
+
+    def test_it_returns_parallel_arrays(self):
+        payload = self.range()
+        self.assertEqual(len(payload["t"]), payload["buckets"])
+        for column in payload["columns"].values():
+            self.assertEqual(len(column["min"]), len(payload["t"]))
+            self.assertEqual(len(column["max"]), len(payload["t"]))
+        self.assertEqual(len(payload["burst"]), len(payload["t"]))
+
+    def test_a_narrow_width_forces_an_envelope(self):
+        payload = self.range("?width=20")
+        self.assertLessEqual(payload["buckets"], 20)
+        self.assertTrue(payload["downsampled"])
+
+    def test_a_burst_window_at_full_width_is_not_downsampled(self):
+        """Zooming into one episode is the detail mode: few enough rows that every one gets
+        its own bucket, so min == max and the band draws as a line."""
+        payload = self.range("?from=2026-08-19T09:01:59&to=2026-08-19T09:02:01&width=900")
+        self.assertGreater(payload["rows"], 0)
+        self.assertFalse(payload["downsampled"])
+        column = payload["columns"]["ax_g"]
+        self.assertEqual(column["min"], column["max"])
+
+    def test_the_burst_flag_survives_bucketing(self):
+        payload = self.range("?width=60")
+        self.assertGreater(sum(payload["burst"]), 0)
+
+    def test_a_window_with_nothing_in_it_is_empty_not_broken(self):
+        payload = self.range("?from=2026-08-20T00:00:00&to=2026-08-20T01:00:00")
+        self.assertEqual(payload["buckets"], 0)
+        self.assertEqual(payload["t"], [])
+
+    def test_columns_can_be_asked_for(self):
+        payload = self.range("?columns=temp_C")
+        self.assertEqual(list(payload["columns"]), ["temp_C"])
+
+    def test_an_unknown_board_is_a_404(self):
+        status, body, _r = self.get("/range?board=nope")
+        self.assertEqual(status, 404)
+        self.assertIn(b"no such board", body)
+
+    def test_a_bad_width_is_a_400(self):
+        status, _body, _r = self.get("/range?width=wide")
+        self.assertEqual(status, 400)
+
+
+class Spec(ServedArchive):
+    def test_the_tiles_come_from_tiles_py(self):
+        """Served rather than restated, which is what stops the layout existing twice."""
+        status, body, _r = self.get("/spec")
+        self.assertEqual(status, 200)
+        spec = json.loads(body.decode("utf-8"))
+        import tiles
+        self.assertEqual(len(spec["tiles"]), len(tiles.TILES))
+        self.assertIn("palettes", spec)
+
+    def test_it_names_the_boards_and_says_it_is_not_live(self):
+        _status, body, _r = self.get("/spec")
+        spec = json.loads(body.decode("utf-8"))
+        self.assertEqual(spec["boards"], ["bench"])
+        self.assertFalse(spec["live"])
+
+
+class Page(ServedArchive):
+    def test_the_root_serves_the_page(self):
+        status, body, response = self.get("/")
+        self.assertEqual(status, 200)
+        self.assertIn("text/html", response.getheader("Content-Type"))
+        self.assertIn(b"history.js", body)
+
+    def test_the_assets_are_reachable(self):
+        for name in ("/history.js", "/history.css", "/uPlot.iife.min.js"):
+            status, body, _r = self.get(name)
+            self.assertEqual(status, 200, name)
+            self.assertTrue(body)
+
+    def test_traversal_gets_nowhere(self):
+        """basename() is the whole defence, exactly as in webhub."""
+        for path in ("/../main.py", "/../../etc/passwd", "/..%2fmain.py"):
+            status, _body, _r = self.get(path)
+            self.assertEqual(status, 404, path)
+
+    def test_the_archive_summary_moved_but_still_exists(self):
+        status, body, _r = self.get("/archive")
+        self.assertEqual(status, 200)
+        self.assertIn(b"bench", body)
+
+
 class Summary(ServedArchive):
-    def test_the_root_says_what_is_in_the_archive(self):
-        status, body, _r = self.get("/")
+    def test_the_archive_route_says_what_is_in_it(self):
+        status, body, _r = self.get("/archive")
         self.assertEqual(status, 200)
         text = body.decode("utf-8")
         self.assertIn("bench", text)
@@ -144,7 +237,7 @@ class EmptyArchive(unittest.TestCase):
         return response.status, response.read()
 
     def test_it_serves_rather_than_failing(self):
-        status, body = self.get("/")
+        status, body = self.get("/archive")
         self.assertEqual(status, 200)
         self.assertIn(b"no boards yet", body)
 

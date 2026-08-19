@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Nicla history</title>
+<link rel="stylesheet" href="uPlot.min.css" />
+<link rel="stylesheet" href="history.css" />
+</head>
+<body>
+
+<header class="bar">
+  <div class="who">
+    <strong id="archive">archive</strong>
+    <select id="board" aria-label="Board"></select>
+  </div>
+
+  <div class="when">
+    <button type="button" data-span="3600">1h</button>
+    <button type="button" data-span="21600">6h</button>
+    <button type="button" data-span="86400">24h</button>
+    <button type="button" data-span="604800">7d</button>
+    <button type="button" data-span="0" aria-pressed="true">all</button>
+  </div>
+
+  <div class="state">
+    <!-- A view that only updates on reload goes stale silently, and stale flat traces look
+         exactly like a quiet sensor. This is the whole mitigation, so it is not decoration. -->
+    <span id="asof" class="asof">no data yet</span>
+    <button type="button" id="refresh">Refresh</button>
+  </div>
+</header>
+
+<section id="detail" class="detail" hidden>
+  <span id="detailtext"></span>
+  <button type="button" id="back">Back to overview</button>
+</section>
+
+<section class="rail" aria-label="Events across the window">
+  <div id="rail" class="railtrack"></div>
+  <div id="railnote" class="railnote"></div>
+</section>
+
+<main>
+  <section class="events">
+    <h2>What happened</h2>
+    <div id="eventlist" class="eventlist">loading…</div>
+  </section>
+
+  <section class="plots">
+    <div id="tiles" class="tiles"></div>
+  </section>
+</main>
+
+<script src="uPlot.iife.min.js"></script>
+<script src="history.js"></script>
+</body>
+</html>
