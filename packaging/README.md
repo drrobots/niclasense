@@ -84,6 +84,44 @@ shortcut to <http://127.0.0.1:8988/>. It attaches to the capture over loopback, 
 the session boundary, so a service in session 0 and a dashboard in the user's session need
 nothing between them and Windows Firewall never prompts.
 
+### Serving the dashboard to other machines
+
+Off by default. An install that says nothing binds loopback, opens no ports, and behaves
+exactly as it always did. To serve the network, name the address at install time:
+
+```
+setup.exe /VERYSILENT /HTTPHOST=192.168.1.5
+setup.exe /VERYSILENT /HTTPHOST=0.0.0.0 /ALLOWHOST=nicla-01.lan,nicla-01
+```
+
+`/HTTPHOST` reaches `webdash.py` as `--http-host`, via `dashboard-task.ps1` and
+`supervise.py` (which forwards anything it does not recognise, so it needed no change).
+`/ALLOWHOST` is comma-separated, and is only needed if you reach the dashboard **by name**
+rather than by address — see the `Host` allowlist in `webhub.host_allowed()`.
+
+Three things follow from `/HTTPHOST`, and they are the reason it is a parameter rather than
+the default:
+
+- **A firewall rule is created, and only then.** `netsh advfirewall` adds an inbound rule for
+  `pythonw.exe` on port 8988, scoped `domain,private`, removed again on uninstall. It is
+  gated on the address not being loopback, so a default install still opens nothing. The
+  scoping is deliberate: `public` would re-open the port every time a laptop joined an
+  untrusted network. Without a rule the dashboard is simply unreachable and nothing looks
+  wrong — the logon task is hidden, under `pythonw.exe`, so there is nobody to answer a
+  firewall prompt.
+
+- **A specific address stops loopback answering.** `/HTTPHOST=192.168.1.5` binds that
+  interface and no other, so `http://127.0.0.1:8988/` fails *on the machine itself*. The
+  Start Menu shortcut is generated from the same parameter and points somewhere that works.
+  Use `/HTTPHOST=0.0.0.0` if you want both, accepting that it serves every interface.
+
+- **The dashboard is per-user, and now visibly so.** Two people logged on is two dashboards,
+  and the second fails to bind the port. That was always true; a LAN bind turns it from an
+  invisible failure into one somebody reports.
+
+There is still no authentication of any kind — anyone who can route to the port sees the
+feed. See `ARCHITECTURE-NOTES.md` note 8.
+
 ### Why supervise.py exists
 
 Two Windows facts, neither of them the app's business, which is why the file lives here.

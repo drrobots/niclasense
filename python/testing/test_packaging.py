@@ -198,6 +198,21 @@ class CommandLine(unittest.TestCase):
         self.assertEqual((mode, log), ("dashboard", r"C:\log\dashboard.log"))
         self.assertEqual(rest, ["127.0.0.1:8765", "--http-port", "8988"])
 
+    def test_the_bind_flags_pass_straight_through(self):
+        """supervise.py knows nothing about --http-host and should not have to: it forwards
+        what it does not recognise, which is the whole reason a LAN bind needed no change
+        here. If that ever stops being true, the dashboard silently reverts to loopback on
+        every installed machine."""
+        _mode, _log, rest = supervise.split_args(
+            ["dashboard", "127.0.0.1:8765", "--http-port", "8988",
+             "--http-host", "192.168.1.5", "--allow-host", "nicla-01.lan"]
+        )
+        self.assertEqual(
+            rest,
+            ["127.0.0.1:8765", "--http-port", "8988",
+             "--http-host", "192.168.1.5", "--allow-host", "nicla-01.lan"],
+        )
+
 
 class InstalledConfig(unittest.TestCase):
     """nicla.conf, read the way the service will read it."""
@@ -234,6 +249,50 @@ class InstalledConfig(unittest.TestCase):
 
     def test_it_serves_loopback_only(self):
         self.assertTrue(self.values["listen"].startswith("127.0.0.1:"))
+
+
+class NetworkBind(unittest.TestCase):
+    """The installer half of --http-host. None of this can run here -- it is Inno Setup and
+    netsh -- so it is checked as text, which still catches the mistakes that matter: a
+    default that stopped being loopback, and a firewall rule that grew a public profile."""
+
+    def setUp(self):
+        with open(os.path.join(PACKAGING_DIR, "nicla.iss")) as handle:
+            self.iss = handle.read()
+        with open(os.path.join(PACKAGING_DIR, "service", "dashboard-task.ps1")) as handle:
+            self.task = handle.read()
+
+    def test_an_install_that_says_nothing_stays_on_loopback(self):
+        self.assertIn("{param:HttpHost|127.0.0.1}", self.iss)
+        self.assertIn('[string] $HttpHost = "127.0.0.1"', self.task)
+
+    def test_the_bind_reaches_the_logon_task(self):
+        self.assertIn("-HttpHost", self.iss)
+        self.assertIn("--http-host {3}", self.task)
+
+    def test_the_firewall_rule_is_only_added_when_the_network_is_served(self):
+        """A default install opens no ports. The Check is the only thing enforcing that."""
+        rule = [line for line in self.iss.splitlines() if "FirewallAddArgs" in line
+                and line.startswith("Filename:")]
+        self.assertEqual(len(rule), 1, "expected exactly one firewall [Run] entry")
+        self.assertIn("Check: ServesNetwork", rule[0])
+
+    def test_the_firewall_rule_is_not_opened_on_public_networks(self):
+        """profile=public would re-open the port on the next coffee shop wifi."""
+        self.assertIn("profile=domain,private", self.iss)
+        self.assertNotIn("profile=public", self.iss)
+        self.assertNotIn("profile=any", self.iss)
+
+    def test_the_firewall_rule_is_removed_again(self):
+        uninstall = self.iss.split("[UninstallRun]", 1)[1]
+        self.assertIn("advfirewall firewall delete rule", uninstall)
+
+    def test_the_shortcut_does_not_assume_loopback_answers(self):
+        """Binding one specific address means 127.0.0.1 is no longer listening, so a
+        hardcoded shortcut would fail on the machine running the dashboard."""
+        icons = self.iss.split("[Icons]", 1)[1].split("[", 1)[0]
+        self.assertIn("{code:DashboardUrl}", icons)
+        self.assertNotIn("http://127.0.0.1:8988/", icons)
 
 
 class WhatGetsShipped(unittest.TestCase):

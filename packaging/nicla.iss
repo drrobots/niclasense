@@ -60,7 +60,7 @@ Name: "{#DataDir}\logs"
 Name: "{#DataDir}\service"
 
 [Icons]
-Name: "{group}\Nicla dashboard"; Filename: "http://127.0.0.1:8988/"
+Name: "{group}\Nicla dashboard"; Filename: "{code:DashboardUrl}"
 Name: "{group}\Capture log folder"; Filename: "{#DataDir}\logs"
 Name: "{group}\Edit capture settings"; Filename: "notepad.exe"; Parameters: """{#DataDir}\nicla.conf"""
 
@@ -69,12 +69,16 @@ Name: "{group}\Edit capture settings"; Filename: "notepad.exe"; Parameters: """{
 ; dashboard's first attach attempt has something to attach to.
 Filename: "{app}\service\nicla-capture.exe"; Parameters: "install"; StatusMsg: "Registering the capture service..."; Flags: runhidden waituntilterminated
 Filename: "{app}\service\nicla-capture.exe"; Parameters: "start"; StatusMsg: "Starting the capture service..."; Flags: runhidden waituntilterminated
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\service\dashboard-task.ps1"" -AppDir ""{app}"""; StatusMsg: "Setting up the dashboard..."; Flags: runhidden waituntilterminated
-Filename: "http://127.0.0.1:8988/"; Description: "Open the dashboard"; Flags: postinstall shellexec nowait skipifsilent
+Filename: "powershell.exe"; Parameters: "{code:DashboardTaskArgs}"; StatusMsg: "Setting up the dashboard..."; Flags: runhidden waituntilterminated
+; Only when this install was actually asked to serve the network. A default install binds
+; loopback, needs no rule, and should not be quietly opening ports on the machine.
+Filename: "netsh.exe"; Parameters: "{code:FirewallAddArgs}"; StatusMsg: "Allowing the dashboard through the firewall..."; Flags: runhidden waituntilterminated; Check: ServesNetwork
+Filename: "{code:DashboardUrl}"; Description: "Open the dashboard"; Flags: postinstall shellexec nowait skipifsilent
 
 [UninstallRun]
 ; Mirror image, and every one of them tolerant of already being gone: an uninstall that
 ; fails because the service was stopped by hand is a bad uninstall.
+Filename: "netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Nicla dashboard"""; RunOnceId: "FirewallRule"; Flags: runhidden waituntilterminated
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\service\dashboard-task.ps1"" -AppDir ""{app}"" -Uninstall"; RunOnceId: "DashboardTask"; Flags: runhidden waituntilterminated
 Filename: "{app}\service\nicla-capture.exe"; Parameters: "stop"; RunOnceId: "StopService"; Flags: runhidden waituntilterminated
 Filename: "{app}\service\nicla-capture.exe"; Parameters: "uninstall"; RunOnceId: "RemoveService"; Flags: runhidden waituntilterminated
@@ -86,6 +90,62 @@ Type: filesandordirs; Name: "{app}\app\__pycache__"
 Type: filesandordirs; Name: "{app}\service\__pycache__"
 
 [Code]
+{ Where the dashboard binds, as given on the setup command line:
+
+    setup.exe /VERYSILENT /HTTPHOST=192.168.1.5 /ALLOWHOST=nicla-01.lan
+
+  Defaulting to loopback means an install that says nothing gets exactly the behaviour it
+  always had -- no network bind, no firewall rule, no prompt. Everything below keys off
+  this one value. }
+function HttpHost(): String;
+begin
+  Result := ExpandConstant('{param:HttpHost|127.0.0.1}');
+end;
+
+function ServesNetwork(): Boolean;
+begin
+  Result := (HttpHost() <> '127.0.0.1') and (HttpHost() <> 'localhost');
+end;
+
+{ The URL for the Start Menu shortcut and the post-install tick box.
+
+  This is not cosmetic. Binding one specific address means loopback is no longer listening,
+  so a shortcut to 127.0.0.1 would fail on the very machine the dashboard is running on. A
+  wildcard bind does answer on loopback, and locally that is the better address to use. }
+function DashboardUrl(Param: String): String;
+begin
+  if (HttpHost() = '0.0.0.0') or not ServesNetwork() then
+    Result := 'http://127.0.0.1:8988/'
+  else
+    Result := 'http://' + HttpHost() + ':8988/';
+end;
+
+function DashboardTaskArgs(Param: String): String;
+var
+  Allow: String;
+begin
+  Result := '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}') +
+            '\service\dashboard-task.ps1" -AppDir "' + ExpandConstant('{app}') +
+            '" -HttpHost "' + HttpHost() + '"';
+  { Comma-separated on the command line, which is also how PowerShell binds a [string[]],
+    so /ALLOWHOST=a.lan,b.lan needs no translation. Omitted entirely when empty: passing
+    -AllowHost "" would hand the task an array holding one empty name. }
+  Allow := ExpandConstant('{param:AllowHost|}');
+  if Allow <> '' then
+    Result := Result + ' -AllowHost ' + Allow;
+end;
+
+{ Scoped to domain and private on purpose. Adding "public" would re-open this port every
+  time the machine joined an untrusted network, which is not what "let the office see it"
+  was ever meant to mean. The rule names pythonw.exe because that is what the logon task
+  runs -- python.exe is the service, and the service is loopback-only. }
+function FirewallAddArgs(Param: String): String;
+begin
+  Result := 'advfirewall firewall add rule name="Nicla dashboard" dir=in action=allow' +
+            ' program="' + ExpandConstant('{app}') + '\python\pythonw.exe"' +
+            ' protocol=TCP localport=8988 profile=domain,private';
+end;
+
 function InitializeSetup(): Boolean;
 var
   ResultCode: Integer;

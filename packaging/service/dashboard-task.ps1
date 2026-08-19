@@ -28,7 +28,9 @@ param(
     [Parameter(Mandatory = $true)] [string] $AppDir,
     [switch] $Uninstall,
     [int] $HttpPort = 8988,
-    [string] $Endpoint = "127.0.0.1:8765"
+    [string] $Endpoint = "127.0.0.1:8765",
+    [string] $HttpHost = "127.0.0.1",
+    [string[]] $AllowHost = @()
 )
 
 $ErrorActionPreference = "Stop"
@@ -49,8 +51,17 @@ $supervise = Join-Path $AppDir "service\supervise.py"
 # permissions problem and a muddled log at once. %LOCALAPPDATA% is left unexpanded on
 # purpose -- the task scheduler expands it in the running user's context, which is the
 # whole point of it.
-$arguments = '"{0}" dashboard --log "%LOCALAPPDATA%\NiclaSense\dashboard.log" {1} --http-port {2}' `
-    -f $supervise, $Endpoint, $HttpPort
+# supervise.py passes anything it does not recognise straight through to webdash.py, so the
+# bind address needs no support there -- only a way through this task's own argument list.
+#
+# $HttpHost defaults to loopback, which is what a machine gets unless the installer was told
+# otherwise. Moving it off loopback puts an unauthenticated feed on the network, and needs a
+# firewall rule before it is reachable at all; see packaging/README.md.
+$arguments = '"{0}" dashboard --log "%LOCALAPPDATA%\NiclaSense\dashboard.log" {1} --http-port {2} --http-host {3}' `
+    -f $supervise, $Endpoint, $HttpPort, $HttpHost
+foreach ($name in $AllowHost) {
+    $arguments += ' --allow-host {0}' -f $name
+}
 
 $action = New-ScheduledTaskAction -Execute $pythonw -Argument $arguments `
     -WorkingDirectory (Join-Path $AppDir "app")
